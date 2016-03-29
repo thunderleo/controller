@@ -23,6 +23,7 @@ import akka.testkit.TestActorRef;
 import com.google.common.collect.ImmutableMap;
 import com.google.common.util.concurrent.Uninterruptibles;
 import com.google.protobuf.ByteString;
+import java.util.Arrays;
 import java.util.Collections;
 import java.util.HashMap;
 import java.util.List;
@@ -37,6 +38,7 @@ import org.opendaylight.controller.cluster.raft.MockRaftActorContext;
 import org.opendaylight.controller.cluster.raft.RaftActorContext;
 import org.opendaylight.controller.cluster.raft.RaftActorLeadershipTransferCohort;
 import org.opendaylight.controller.cluster.raft.RaftState;
+import org.opendaylight.controller.cluster.raft.RaftVersions;
 import org.opendaylight.controller.cluster.raft.ReplicatedLogEntry;
 import org.opendaylight.controller.cluster.raft.ReplicatedLogImplEntry;
 import org.opendaylight.controller.cluster.raft.SerializationUtils;
@@ -46,7 +48,6 @@ import org.opendaylight.controller.cluster.raft.base.messages.ApplyJournalEntrie
 import org.opendaylight.controller.cluster.raft.base.messages.ApplyState;
 import org.opendaylight.controller.cluster.raft.base.messages.CaptureSnapshot;
 import org.opendaylight.controller.cluster.raft.base.messages.ElectionTimeout;
-import org.opendaylight.controller.cluster.raft.base.messages.IsolatedLeaderCheck;
 import org.opendaylight.controller.cluster.raft.base.messages.Replicate;
 import org.opendaylight.controller.cluster.raft.base.messages.SendHeartBeat;
 import org.opendaylight.controller.cluster.raft.base.messages.SendInstallSnapshot;
@@ -63,7 +64,7 @@ import org.opendaylight.controller.cluster.raft.utils.ForwardMessageToBehaviorAc
 import org.opendaylight.controller.cluster.raft.utils.MessageCollectorActor;
 import scala.concurrent.duration.FiniteDuration;
 
-public class LeaderTest extends AbstractLeaderTest {
+public class LeaderTest extends AbstractLeaderTest<Leader> {
 
     static final String FOLLOWER_ID = "follower";
     public static final String LEADER_ID = "leader";
@@ -111,6 +112,7 @@ public class LeaderTest extends AbstractLeaderTest {
         actorContext.getTermInformation().update(term, "");
 
         leader = new Leader(actorContext);
+        actorContext.setCurrentBehavior(leader);
 
         // Leader should send an immediate heartbeat with no entries as follower is inactive.
         long lastIndex = actorContext.getReplicatedLog().lastIndex();
@@ -132,7 +134,7 @@ public class LeaderTest extends AbstractLeaderTest {
         Uninterruptibles.sleepUninterruptibly(actorContext.getConfigParams().
                 getHeartBeatInterval().toMillis(), TimeUnit.MILLISECONDS);
 
-        leader.handleMessage(leaderActor, new SendHeartBeat());
+        leader.handleMessage(leaderActor, SendHeartBeat.INSTANCE);
 
         appendEntries = MessageCollectorActor.expectFirstMatching(followerActor, AppendEntries.class);
         assertEquals("getPrevLogIndex", lastIndex - 1, appendEntries.getPrevLogIndex());
@@ -145,9 +147,13 @@ public class LeaderTest extends AbstractLeaderTest {
 
 
     private RaftActorBehavior sendReplicate(MockRaftActorContext actorContext, long index){
+        return sendReplicate(actorContext, 1, index);
+    }
+
+    private RaftActorBehavior sendReplicate(MockRaftActorContext actorContext, long term, long index){
         MockRaftActorContext.MockPayload payload = new MockRaftActorContext.MockPayload("foo");
         MockRaftActorContext.MockReplicatedLogEntry newEntry = new MockRaftActorContext.MockReplicatedLogEntry(
-                1, index, payload);
+                term, index, payload);
         actorContext.getReplicatedLog().append(newEntry);
         return leader.handleMessage(leaderActor, new Replicate(null, null, newEntry));
     }
@@ -187,6 +193,59 @@ public class LeaderTest extends AbstractLeaderTest {
         assertEquals("Entry getTerm", term, appendEntries.getEntries().get(0).getTerm());
         assertEquals("Entry payload", "foo", appendEntries.getEntries().get(0).getData().toString());
         assertEquals("Commit Index", lastIndex, actorContext.getCommitIndex());
+    }
+
+    @Test
+    public void testHandleReplicateMessageWithHigherTermThanPreviousEntry() throws Exception {
+        logStart("testHandleReplicateMessageWithHigherTermThanPreviousEntry");
+
+        MockRaftActorContext actorContext = createActorContextWithFollower();
+
+        // The raft context is initialized with a couple log entries. However the commitIndex
+        // is -1, simulating that the leader previously didn't get consensus and thus the log entries weren't
+        // committed and applied. Now it regains leadership with a higher term (2).
+        long prevTerm = actorContext.getTermInformation().getCurrentTerm();
+        long newTerm = prevTerm + 1;
+        actorContext.getTermInformation().update(newTerm, "");
+
+        leader = new Leader(actorContext);
+        actorContext.setCurrentBehavior(leader);
+
+        // Leader will send an immediate heartbeat - ignore it.
+        MessageCollectorActor.expectFirstMatching(followerActor, AppendEntries.class);
+
+        // The follower replies with the leader's current last index and term, simulating that it is
+        // up to date with the leader.
+        long lastIndex = actorContext.getReplicatedLog().lastIndex();
+        leader.handleMessage(followerActor, new AppendEntriesReply(
+                FOLLOWER_ID, newTerm, true, lastIndex, prevTerm, (short)0));
+
+        // The commit index should not get updated even though consensus was reached. This is b/c the
+        // last entry's term does match the current term. As per §5.4.1, "Raft never commits log entries
+        // from previous terms by counting replicas".
+        assertEquals("Commit Index", -1, actorContext.getCommitIndex());
+
+        followerActor.underlyingActor().clear();
+
+        // Now replicate a new entry with the new term 2.
+        long newIndex = lastIndex + 1;
+        sendReplicate(actorContext, newTerm, newIndex);
+
+        AppendEntries appendEntries = MessageCollectorActor.expectFirstMatching(followerActor, AppendEntries.class);
+        assertEquals("getPrevLogIndex", lastIndex, appendEntries.getPrevLogIndex());
+        assertEquals("getPrevLogTerm", prevTerm, appendEntries.getPrevLogTerm());
+        assertEquals("Entries size", 1, appendEntries.getEntries().size());
+        assertEquals("Entry getIndex", newIndex, appendEntries.getEntries().get(0).getIndex());
+        assertEquals("Entry getTerm", newTerm, appendEntries.getEntries().get(0).getTerm());
+        assertEquals("Entry payload", "foo", appendEntries.getEntries().get(0).getData().toString());
+
+        // The follower replies with success. The leader should now update the commit index to the new index
+        // as per §5.4.1 "once an entry from the current term is committed by counting replicas, then all
+        // prior entries are committed indirectly".
+        leader.handleMessage(followerActor, new AppendEntriesReply(
+                FOLLOWER_ID, newTerm, true, newIndex, newTerm, (short)0));
+
+        assertEquals("Commit Index", newIndex, actorContext.getCommitIndex());
     }
 
     @Test
@@ -350,7 +409,7 @@ public class LeaderTest extends AbstractLeaderTest {
         // Wait slightly longer than heartbeat duration
         Uninterruptibles.sleepUninterruptibly(750, TimeUnit.MILLISECONDS);
 
-        leader.handleMessage(leaderActor, new SendHeartBeat());
+        leader.handleMessage(leaderActor, SendHeartBeat.INSTANCE);
 
         List<AppendEntries> allMessages = MessageCollectorActor.getAllMatching(followerActor, AppendEntries.class);
         assertEquals("The number of append entries collected should be 2", 2, allMessages.size());
@@ -392,7 +451,7 @@ public class LeaderTest extends AbstractLeaderTest {
 
         for(int i=0;i<3;i++) {
             Uninterruptibles.sleepUninterruptibly(150, TimeUnit.MILLISECONDS);
-            leader.handleMessage(leaderActor, new SendHeartBeat());
+            leader.handleMessage(leaderActor, SendHeartBeat.INSTANCE);
         }
 
         List<AppendEntries> allMessages = MessageCollectorActor.getAllMatching(followerActor, AppendEntries.class);
@@ -428,7 +487,7 @@ public class LeaderTest extends AbstractLeaderTest {
         followerActor.underlyingActor().clear();
 
         Uninterruptibles.sleepUninterruptibly(150, TimeUnit.MILLISECONDS);
-        leader.handleMessage(leaderActor, new SendHeartBeat());
+        leader.handleMessage(leaderActor, SendHeartBeat.INSTANCE);
         sendReplicate(actorContext, lastIndex+1);
 
         List<AppendEntries> allMessages = MessageCollectorActor.getAllMatching(followerActor, AppendEntries.class);
@@ -534,7 +593,7 @@ public class LeaderTest extends AbstractLeaderTest {
         Uninterruptibles.sleepUninterruptibly(actorContext.getConfigParams().getHeartBeatInterval().toMillis(),
                 TimeUnit.MILLISECONDS);
 
-        leader.handleMessage(leaderActor, new SendHeartBeat());
+        leader.handleMessage(leaderActor, SendHeartBeat.INSTANCE);
 
         AppendEntries aeproto = MessageCollectorActor.expectFirstMatching(followerActor, AppendEntries.class);
 
@@ -545,7 +604,7 @@ public class LeaderTest extends AbstractLeaderTest {
         //InstallSnapshotReply received
         fts.markSendStatus(true);
 
-        leader.handleMessage(leaderActor, new SendHeartBeat());
+        leader.handleMessage(leaderActor, SendHeartBeat.INSTANCE);
 
         InstallSnapshot is = MessageCollectorActor.expectFirstMatching(followerActor, InstallSnapshot.class);
 
@@ -837,6 +896,7 @@ public class LeaderTest extends AbstractLeaderTest {
         actorContext.setCommitIndex(commitIndex);
 
         leader = new Leader(actorContext);
+        actorContext.setCurrentBehavior(leader);
 
         leader.getFollower(FOLLOWER_ID).setMatchIndex(-1);
         leader.getFollower(FOLLOWER_ID).setNextIndex(0);
@@ -905,6 +965,7 @@ public class LeaderTest extends AbstractLeaderTest {
         actorContext.setCommitIndex(commitIndex);
 
         leader = new Leader(actorContext);
+        actorContext.setCurrentBehavior(leader);
 
         leader.getFollower(FOLLOWER_ID).setMatchIndex(-1);
         leader.getFollower(FOLLOWER_ID).setNextIndex(0);
@@ -1013,7 +1074,7 @@ public class LeaderTest extends AbstractLeaderTest {
         Uninterruptibles.sleepUninterruptibly(actorContext.getConfigParams().getHeartBeatInterval().toMillis(),
                 TimeUnit.MILLISECONDS);
 
-        leader.handleMessage(leaderActor, new SendHeartBeat());
+        leader.handleMessage(leaderActor, SendHeartBeat.INSTANCE);
 
         installSnapshot = MessageCollectorActor.expectFirstMatching(followerActor, InstallSnapshot.class);
 
@@ -1069,7 +1130,7 @@ public class LeaderTest extends AbstractLeaderTest {
         assertEquals(3, installSnapshot.getTotalChunks());
         assertEquals(AbstractLeader.INITIAL_LAST_CHUNK_HASH_CODE, installSnapshot.getLastChunkHashCode().get().intValue());
 
-        int hashCode = installSnapshot.getData().hashCode();
+        int hashCode = Arrays.hashCode(installSnapshot.getData());
 
         followerActor.underlyingActor().clear();
 
@@ -1120,8 +1181,8 @@ public class LeaderTest extends AbstractLeaderTest {
                 j = barray.length;
             }
 
-            ByteString chunk = fts.getNextChunk();
-            assertEquals("bytestring size not matching for chunk:"+ chunkIndex, j-i, chunk.size());
+            byte[] chunk = fts.getNextChunk();
+            assertEquals("bytestring size not matching for chunk:"+ chunkIndex, j-i, chunk.length);
             assertEquals("chunkindex not matching", chunkIndex, fts.getChunkIndex());
 
             fts.markSendStatus(true);
@@ -1133,8 +1194,8 @@ public class LeaderTest extends AbstractLeaderTest {
         assertEquals("totalChunks not matching", chunkIndex, fts.getTotalChunks());
     }
 
-    @Override protected RaftActorBehavior createBehavior(
-        RaftActorContext actorContext) {
+    @Override
+    protected Leader createBehavior(final RaftActorContext actorContext) {
         return new Leader(actorContext);
     }
 
@@ -1184,6 +1245,7 @@ public class LeaderTest extends AbstractLeaderTest {
 
         Follower follower = new Follower(followerActorContext);
         followerActor.underlyingActor().setBehavior(follower);
+        followerActorContext.setCurrentBehavior(follower);
 
         Map<String, String> peerAddresses = new HashMap<>();
         peerAddresses.put(FOLLOWER_ID, followerActor.path().toString());
@@ -1207,6 +1269,7 @@ public class LeaderTest extends AbstractLeaderTest {
         followerActorContext.setCommitIndex(1);
 
         leader = new Leader(leaderActorContext);
+        leaderActorContext.setCurrentBehavior(leader);
 
         AppendEntries appendEntries = MessageCollectorActor.expectFirstMatching(followerActor, AppendEntries.class);
 
@@ -1238,6 +1301,7 @@ public class LeaderTest extends AbstractLeaderTest {
 
         Follower follower = new Follower(followerActorContext);
         followerActor.underlyingActor().setBehavior(follower);
+        followerActorContext.setCurrentBehavior(follower);
 
         Map<String, String> leaderPeerAddresses = new HashMap<>();
         leaderPeerAddresses.put(FOLLOWER_ID, followerActor.path().toString());
@@ -1283,7 +1347,7 @@ public class LeaderTest extends AbstractLeaderTest {
         Uninterruptibles.sleepUninterruptibly(leaderActorContext.getConfigParams().getHeartBeatInterval().toMillis(),
                 TimeUnit.MILLISECONDS);
 
-        leader.handleMessage(leaderActor, new SendHeartBeat());
+        leader.handleMessage(leaderActor, SendHeartBeat.INSTANCE);
 
         appendEntries = MessageCollectorActor.expectFirstMatching(followerActor, AppendEntries.class);
 
@@ -1405,6 +1469,7 @@ public class LeaderTest extends AbstractLeaderTest {
 
         Follower follower = new Follower(followerActorContext);
         followerActor.underlyingActor().setBehavior(follower);
+        followerActorContext.setCurrentBehavior(follower);
 
         leader = new Leader(leaderActorContext);
 
@@ -1420,6 +1485,7 @@ public class LeaderTest extends AbstractLeaderTest {
         assertEquals("getPrevLogIndex", 0, appendEntries.getPrevLogIndex());
 
         leaderActor.underlyingActor().setBehavior(leader);
+        leaderActorContext.setCurrentBehavior(leader);
 
         leader.handleMessage(followerActor, appendEntriesReply);
 
@@ -1484,6 +1550,7 @@ public class LeaderTest extends AbstractLeaderTest {
 
         Follower follower = new Follower(followerActorContext);
         followerActor.underlyingActor().setBehavior(follower);
+        followerActorContext.setCurrentBehavior(follower);
 
         leader = new Leader(leaderActorContext);
 
@@ -1499,6 +1566,7 @@ public class LeaderTest extends AbstractLeaderTest {
         assertEquals("getPrevLogIndex", 0, appendEntries.getPrevLogIndex());
 
         leaderActor.underlyingActor().setBehavior(leader);
+        leaderActorContext.setCurrentBehavior(leader);
 
         leader.handleMessage(followerActor, appendEntriesReply);
 
@@ -1602,7 +1670,10 @@ public class LeaderTest extends AbstractLeaderTest {
 
         leader = new Leader(leaderActorContext);
 
+        FollowerLogInformation followerInfo = leader.getFollower(FOLLOWER_ID);
+
         assertEquals(payloadVersion, leader.getLeaderPayloadVersion());
+        assertEquals(RaftVersions.HELIUM_VERSION, followerInfo.getRaftVersion());
 
         short payloadVersion = 5;
         AppendEntriesReply reply = new AppendEntriesReply(FOLLOWER_ID, 1, true, 2, 1, payloadVersion);
@@ -1629,8 +1700,10 @@ public class LeaderTest extends AbstractLeaderTest {
 
         assertEquals(2, applyState.getReplicatedLogEntry().getIndex());
 
-        FollowerLogInformation followerInfo = leader.getFollower(FOLLOWER_ID);
+        assertEquals(2, followerInfo.getMatchIndex());
+        assertEquals(3, followerInfo.getNextIndex());
         assertEquals(payloadVersion, followerInfo.getPayloadVersion());
+        assertEquals(RaftVersions.CURRENT_VERSION, followerInfo.getRaftVersion());
     }
 
     @Test
@@ -1676,6 +1749,7 @@ public class LeaderTest extends AbstractLeaderTest {
 
         Follower follower = new Follower(followerActorContext);
         followerActor.underlyingActor().setBehavior(follower);
+        followerActorContext.setCurrentBehavior(follower);
 
         leader = new Leader(leaderActorContext);
 
@@ -1691,6 +1765,7 @@ public class LeaderTest extends AbstractLeaderTest {
         assertEquals("getPrevLogIndex", 2, appendEntries.getPrevLogIndex());
 
         leaderActor.underlyingActor().setBehavior(leader);
+        leaderActorContext.setCurrentBehavior(leader);
 
         leader.handleMessage(followerActor, appendEntriesReply);
 
@@ -1756,7 +1831,7 @@ public class LeaderTest extends AbstractLeaderTest {
         MockRaftActorContext leaderActorContext = createActorContext();
 
         leader = new Leader(leaderActorContext);
-        RaftActorBehavior behavior = leader.handleMessage(leaderActor, new IsolatedLeaderCheck());
+        RaftActorBehavior behavior = leader.handleMessage(leaderActor, Leader.ISOLATED_LEADER_CHECK);
         Assert.assertTrue(behavior instanceof Leader);
     }
 
@@ -1777,7 +1852,7 @@ public class LeaderTest extends AbstractLeaderTest {
 
         leader.markFollowerActive("follower-1");
         leader.markFollowerActive("follower-2");
-        RaftActorBehavior behavior = leader.handleMessage(leaderActor, new IsolatedLeaderCheck());
+        RaftActorBehavior behavior = leader.handleMessage(leaderActor, Leader.ISOLATED_LEADER_CHECK);
         Assert.assertTrue("Behavior not instance of Leader when all followers are active",
                 behavior instanceof Leader);
 
@@ -1790,7 +1865,7 @@ public class LeaderTest extends AbstractLeaderTest {
 
         leader.markFollowerInActive("follower-1");
         leader.markFollowerActive("follower-2");
-        behavior = leader.handleMessage(leaderActor, new IsolatedLeaderCheck());
+        behavior = leader.handleMessage(leaderActor, Leader.ISOLATED_LEADER_CHECK);
         Assert.assertTrue("Behavior not instance of Leader when majority of followers are active",
                 behavior instanceof Leader);
 
@@ -1802,7 +1877,7 @@ public class LeaderTest extends AbstractLeaderTest {
         assertEquals(termMsg2.getActor(), followerActor2);
 
         leader.markFollowerInActive("follower-2");
-        return leader.handleMessage(leaderActor, new IsolatedLeaderCheck());
+        return leader.handleMessage(leaderActor, Leader.ISOLATED_LEADER_CHECK);
     }
 
     @Test
@@ -1902,6 +1977,7 @@ public class LeaderTest extends AbstractLeaderTest {
         leaderActorContext.addToPeers(nonVotingFollowerId, nonVotingFollowerActor.path().toString(), VotingState.NON_VOTING);
 
         leader = new Leader(leaderActorContext);
+        leaderActorContext.setCurrentBehavior(leader);
 
         // Ignore initial heartbeats
         MessageCollectorActor.expectFirstMatching(followerActor, AppendEntries.class);
@@ -1943,7 +2019,7 @@ public class LeaderTest extends AbstractLeaderTest {
         MessageCollectorActor.assertNoneMatching(leaderActor, ApplyState.class, 500);
 
         // Send reply from the voting follower and verify consensus.
-        leader.handleMessage(leaderActor, new AppendEntriesReply(FOLLOWER_ID, 1, true, 0, 1, (short)0));
+        leader.handleMessage(leaderActor, new AppendEntriesReply(FOLLOWER_ID, 1, true, 1, 1, (short)0));
 
         MessageCollectorActor.expectFirstMatching(leaderActor, ApplyState.class);
     }
@@ -1958,6 +2034,7 @@ public class LeaderTest extends AbstractLeaderTest {
         leaderActorContext.setReplicatedLog(new MockRaftActorContext.MockReplicatedLogBuilder().build());
 
         leader = new Leader(leaderActorContext);
+        leaderActorContext.setCurrentBehavior(leader);
 
         // Initial heartbeat
         MessageCollectorActor.expectFirstMatching(followerActor, AppendEntries.class);
@@ -1997,6 +2074,7 @@ public class LeaderTest extends AbstractLeaderTest {
         leaderActorContext.setReplicatedLog(new MockRaftActorContext.MockReplicatedLogBuilder().build());
 
         leader = new Leader(leaderActorContext);
+        leaderActorContext.setCurrentBehavior(leader);
 
         // Initial heartbeat
         MessageCollectorActor.expectFirstMatching(followerActor, AppendEntries.class);
@@ -2028,6 +2106,7 @@ public class LeaderTest extends AbstractLeaderTest {
                 new FiniteDuration(200, TimeUnit.MILLISECONDS));
 
         leader = new Leader(leaderActorContext);
+        leaderActorContext.setCurrentBehavior(leader);
 
         // Initial heartbeat
         MessageCollectorActor.expectFirstMatching(followerActor, AppendEntries.class);
@@ -2045,7 +2124,7 @@ public class LeaderTest extends AbstractLeaderTest {
 
         Uninterruptibles.sleepUninterruptibly(leaderActorContext.getConfigParams().
                 getHeartBeatInterval().toMillis() + 1, TimeUnit.MILLISECONDS);
-        leader.handleMessage(leaderActor, new SendHeartBeat());
+        leader.handleMessage(leaderActor, SendHeartBeat.INSTANCE);
         MessageCollectorActor.expectFirstMatching(followerActor, AppendEntries.class);
         leader.handleMessage(leaderActor, new AppendEntriesReply(FOLLOWER_ID, 1, true, 1, 1, (short)0));
 
@@ -2066,6 +2145,7 @@ public class LeaderTest extends AbstractLeaderTest {
         leaderActorContext.setReplicatedLog(new MockRaftActorContext.MockReplicatedLogBuilder().build());
 
         leader = new Leader(leaderActorContext);
+        leaderActorContext.setCurrentBehavior(leader);
 
         // Initial heartbeat
         MessageCollectorActor.expectFirstMatching(followerActor, AppendEntries.class);
@@ -2086,7 +2166,7 @@ public class LeaderTest extends AbstractLeaderTest {
         for(int i = 0; i < leaderActorContext.getConfigParams().getElectionTimeoutFactor(); i++) {
             Uninterruptibles.sleepUninterruptibly(leaderActorContext.getConfigParams().
                     getHeartBeatInterval().toMillis() + 1, TimeUnit.MILLISECONDS);
-            leader.handleMessage(leaderActor, new SendHeartBeat());
+            leader.handleMessage(leaderActor, SendHeartBeat.INSTANCE);
         }
 
         verify(mockTransferCohort).abortTransfer();
@@ -2095,7 +2175,7 @@ public class LeaderTest extends AbstractLeaderTest {
     }
 
     @Override
-    protected void assertStateChangesToFollowerWhenRaftRPCHasNewerTerm(RaftActorContext actorContext,
+    protected void assertStateChangesToFollowerWhenRaftRPCHasNewerTerm(MockRaftActorContext actorContext,
             ActorRef actorRef, RaftRPC rpc) throws Exception {
         super.assertStateChangesToFollowerWhenRaftRPCHasNewerTerm(actorContext, actorRef, rpc);
         assertEquals("New votedFor", null, actorContext.getTermInformation().getVotedFor());

@@ -76,7 +76,7 @@ public class DelayedMessagesElectionScenarioTest extends AbstractLeaderElectionS
         member3Actor.expectMessageClass(RequestVoteReply.class, 1);
         member3Actor.expectMessageClass(AppendEntriesReply.class, 2);
 
-        member3ActorRef.tell(new ElectionTimeout(), ActorRef.noSender());
+        member3ActorRef.tell(ElectionTimeout.INSTANCE, ActorRef.noSender());
 
         member3Actor.waitForExpectedMessages(RequestVoteReply.class);
 
@@ -154,7 +154,7 @@ public class DelayedMessagesElectionScenarioTest extends AbstractLeaderElectionS
 
         member3Actor.dropMessagesToBehavior(RequestVote.class);
 
-        member2ActorRef.tell(new ElectionTimeout(), ActorRef.noSender());
+        member2ActorRef.tell(ElectionTimeout.INSTANCE, ActorRef.noSender());
 
         member1Actor.waitForExpectedMessages(RequestVote.class);
         member3Actor.waitForExpectedMessages(RequestVote.class);
@@ -183,6 +183,7 @@ public class DelayedMessagesElectionScenarioTest extends AbstractLeaderElectionS
         member2Context.setConfigParams(member2ConfigParams);
 
         member2Actor.behavior = new Follower(member2Context);
+        member2Context.setCurrentBehavior(member2Actor.behavior);
 
         // Create member 3's behavior initially as Follower
 
@@ -195,6 +196,7 @@ public class DelayedMessagesElectionScenarioTest extends AbstractLeaderElectionS
         member3Context.setConfigParams(member3ConfigParams);
 
         member3Actor.behavior = new Follower(member3Context);
+        member3Context.setCurrentBehavior(member3Actor.behavior);
 
         // Create member 1's behavior initially as Leader
 

@@ -20,6 +20,7 @@ import org.opendaylight.controller.cluster.datastore.identifiers.ShardManagerIde
 import org.opendaylight.controller.cluster.datastore.jmx.mbeans.DatastoreConfigurationMXBeanImpl;
 import org.opendaylight.controller.cluster.datastore.jmx.mbeans.DatastoreInfoMXBeanImpl;
 import org.opendaylight.controller.cluster.datastore.messages.DatastoreSnapshot;
+import org.opendaylight.controller.cluster.datastore.shardmanager.ShardManager;
 import org.opendaylight.controller.cluster.datastore.utils.ActorContext;
 import org.opendaylight.controller.cluster.datastore.utils.Dispatchers;
 import org.opendaylight.controller.cluster.datastore.utils.PrimaryShardInfoFutureCache;
@@ -185,7 +186,7 @@ public class DistributedDataStore implements DOMStore, SchemaContextListener,
 
     @Override
     public void onDatastoreContextUpdated(DatastoreContextFactory contextFactory) {
-        LOG.info("DatastoreContext updated for data store {}", actorContext.getDataStoreType());
+        LOG.info("DatastoreContext updated for data store {}", actorContext.getDataStoreName());
 
         actorContext.setDatastoreContext(contextFactory);
         datastoreConfigMXBean.setContext(contextFactory.getBaseDatastoreContext());
@@ -232,14 +233,14 @@ public class DistributedDataStore implements DOMStore, SchemaContextListener,
         }
     }
 
-    private ActorRef createShardManager(ActorSystem actorSystem, ShardManager.Builder builder, String shardDispatcher,
-                                        String shardManagerId){
+    private static ActorRef createShardManager(ActorSystem actorSystem, ShardManager.Builder builder,
+            String shardDispatcher, String shardManagerId) {
         Exception lastException = null;
 
         for(int i=0;i<100;i++) {
             try {
                 return actorSystem.actorOf(builder.props().withDispatcher(shardDispatcher).withMailbox(
-                        ActorContext.MAILBOX), shardManagerId);
+                        ActorContext.BOUNDED_MAILBOX), shardManagerId);
             } catch (Exception e){
                 lastException = e;
                 Uninterruptibles.sleepUninterruptibly(100, TimeUnit.MILLISECONDS);

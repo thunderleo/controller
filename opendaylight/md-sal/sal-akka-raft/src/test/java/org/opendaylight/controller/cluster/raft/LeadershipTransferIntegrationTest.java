@@ -67,7 +67,7 @@ public class LeadershipTransferIntegrationTest extends AbstractRaftActorIntegrat
         testLog.info("sendShutDown for {} starting", actor.path());
 
         FiniteDuration duration = FiniteDuration.create(5, TimeUnit.SECONDS);
-        Future<Boolean> stopFuture = Patterns.gracefulStop(actor, duration, new Shutdown());
+        Future<Boolean> stopFuture = Patterns.gracefulStop(actor, duration, Shutdown.INSTANCE);
 
         Boolean stopped = Await.result(stopFuture, duration);
         assertEquals("Stopped", Boolean.TRUE, stopped);
@@ -84,7 +84,7 @@ public class LeadershipTransferIntegrationTest extends AbstractRaftActorIntegrat
         clearMessages(follower3NotifierActor);
 
         FiniteDuration duration = FiniteDuration.create(5, TimeUnit.SECONDS);
-        Future<Boolean> stopFuture = Patterns.gracefulStop(leaderActor, duration, new Shutdown());
+        Future<Boolean> stopFuture = Patterns.gracefulStop(leaderActor, duration, Shutdown.INSTANCE);
 
         assertNullLeaderIdChange(leaderNotifierActor);
         assertNullLeaderIdChange(follower1NotifierActor);
@@ -166,7 +166,7 @@ public class LeadershipTransferIntegrationTest extends AbstractRaftActorIntegrat
         testLog.info("createRaftActors starting");
     }
 
-    private void verifyRaftState(ActorRef raftActor, final RaftState expState) throws Throwable {
+    private static void verifyRaftState(ActorRef raftActor, final RaftState expState) throws Throwable {
         Timeout timeout = new Timeout(500, TimeUnit.MILLISECONDS);
         Throwable lastError = null;
         Stopwatch sw = Stopwatch.createStarted();
@@ -185,7 +185,7 @@ public class LeadershipTransferIntegrationTest extends AbstractRaftActorIntegrat
         throw lastError;
     }
 
-    private void assertNullLeaderIdChange(TestActorRef<MessageCollectorActor> notifierActor) {
+    private static void assertNullLeaderIdChange(TestActorRef<MessageCollectorActor> notifierActor) {
         LeaderStateChanged change = expectFirstMatching(notifierActor, LeaderStateChanged.class);
         assertNull("Expected null leader Id", change.getLeaderId());
     }

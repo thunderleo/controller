@@ -365,11 +365,11 @@ public class RaftActorTest extends AbstractActorTest {
         doReturn(true).when(mockSupport).handleSnapshotMessage(same(captureSnapshotReply), any(ActorRef.class));
         mockRaftActor.handleCommand(captureSnapshotReply);
 
-        SaveSnapshotSuccess saveSnapshotSuccess = new SaveSnapshotSuccess(mock(SnapshotMetadata.class));
+        SaveSnapshotSuccess saveSnapshotSuccess = new SaveSnapshotSuccess(new SnapshotMetadata("", 0L, 0L));
         doReturn(true).when(mockSupport).handleSnapshotMessage(same(saveSnapshotSuccess), any(ActorRef.class));
         mockRaftActor.handleCommand(saveSnapshotSuccess);
 
-        SaveSnapshotFailure saveSnapshotFailure = new SaveSnapshotFailure(mock(SnapshotMetadata.class), new Throwable());
+        SaveSnapshotFailure saveSnapshotFailure = new SaveSnapshotFailure(new SnapshotMetadata("", 0L, 0L), new Throwable());
         doReturn(true).when(mockSupport).handleSnapshotMessage(same(saveSnapshotFailure), any(ActorRef.class));
         mockRaftActor.handleCommand(saveSnapshotFailure);
 
@@ -657,12 +657,12 @@ public class RaftActorTest extends AbstractActorTest {
                         new MockRaftActorContext.MockPayload("foo-4")));
 
                 leaderActor.getRaftActorContext().getSnapshotManager().persist(snapshotBytes.toByteArray(),
-                        leader, Runtime.getRuntime().totalMemory());
+                        Runtime.getRuntime().totalMemory());
 
                 assertTrue(leaderActor.getRaftActorContext().getSnapshotManager().isCapturing());
 
                 // The commit is needed to complete the snapshot creation process
-                leaderActor.getRaftActorContext().getSnapshotManager().commit(-1, leader);
+                leaderActor.getRaftActorContext().getSnapshotManager().commit(-1);
 
                 // capture snapshot reply should remove the snapshotted entries only
                 assertEquals(3, leaderActor.getReplicatedLog().size());
@@ -765,7 +765,7 @@ public class RaftActorTest extends AbstractActorTest {
                 assertTrue(followerActor.getRaftActorContext().getSnapshotManager().isCapturing());
 
                 // The commit is needed to complete the snapshot creation process
-                followerActor.getRaftActorContext().getSnapshotManager().commit(-1, follower);
+                followerActor.getRaftActorContext().getSnapshotManager().commit(-1);
 
                 // capture snapshot reply should remove the snapshotted entries only till replicatedToAllIndex
                 assertEquals(3, followerActor.getReplicatedLog().size()); //indexes 5,6,7 left in the log
@@ -844,7 +844,7 @@ public class RaftActorTest extends AbstractActorTest {
                 assertEquals(RaftState.Leader, leaderActor.getCurrentBehavior().state());
 
                 // simulate a real snapshot
-                leaderActor.onReceiveCommand(new SendHeartBeat());
+                leaderActor.onReceiveCommand(SendHeartBeat.INSTANCE);
                 assertEquals(5, leaderActor.getReplicatedLog().size());
                 assertEquals(String.format("expected to be Leader but was %s. Current Leader = %s ",
                         leaderActor.getCurrentBehavior().state(), leaderActor.getLeaderId())
@@ -1295,7 +1295,8 @@ public class RaftActorTest extends AbstractActorTest {
 
         mockRaftActor.waitForRecoveryComplete();
 
-        verify(mockRaftActor.snapshotCohortDelegate, timeout(500).never()).applySnapshot(any(byte[].class));
+        Uninterruptibles.sleepUninterruptibly(500, TimeUnit.MILLISECONDS);
+        verify(mockRaftActor.snapshotCohortDelegate, never()).applySnapshot(any(byte[].class));
 
         RaftActorContext context = mockRaftActor.getRaftActorContext();
         assertEquals("Journal log size", 1, context.getReplicatedLog().size());
@@ -1360,7 +1361,7 @@ public class RaftActorTest extends AbstractActorTest {
 
         MessageCollectorActor.clearMessages(notifierActor);
 
-        raftActorRef.tell(new LeaderTransitioning(), ActorRef.noSender());
+        raftActorRef.tell(LeaderTransitioning.INSTANCE, ActorRef.noSender());
 
         leaderStateChange = MessageCollectorActor.expectFirstMatching(notifierActor, LeaderStateChanged.class);
         assertEquals("getMemberId", persistenceId, leaderStateChange.getMemberId());

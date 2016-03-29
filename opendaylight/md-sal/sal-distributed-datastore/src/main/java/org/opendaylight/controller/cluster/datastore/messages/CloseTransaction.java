@@ -10,17 +10,27 @@ package org.opendaylight.controller.cluster.datastore.messages;
 
 import org.opendaylight.controller.protobuff.messages.transaction.ShardTransactionMessages;
 
-public class CloseTransaction implements SerializableMessage{
-    public static final Class<ShardTransactionMessages.CloseTransaction> SERIALIZABLE_CLASS =
-            ShardTransactionMessages.CloseTransaction.class;
+public class CloseTransaction extends VersionedExternalizableMessage {
+    private static final long serialVersionUID = 1L;
 
+    @Deprecated
     private static final Object SERIALIZED_INSTANCE =
             ShardTransactionMessages.CloseTransaction.newBuilder().build();
 
-    public static final CloseTransaction INSTANCE = new CloseTransaction();
+    public CloseTransaction() {
+    }
 
+    public CloseTransaction(short version) {
+        super(version);
+    }
+
+    @Deprecated
     @Override
-    public Object toSerializable() {
+    protected Object newLegacySerializedInstance() {
         return SERIALIZED_INSTANCE;
+    }
+
+    public static boolean isSerializedType(Object message) {
+        return message instanceof CloseTransaction || message instanceof ShardTransactionMessages.CloseTransaction;
     }
 }

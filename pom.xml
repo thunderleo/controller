@@ -3,13 +3,13 @@
   <modelVersion>4.0.0</modelVersion>
   <parent>
     <groupId>org.opendaylight.odlparent</groupId>
-    <artifactId>odlparent</artifactId>
-    <version>1.6.0-SNAPSHOT</version>
+    <artifactId>odlparent-lite</artifactId>
+    <version>1.7.0-SNAPSHOT</version>
     <relativePath/>
   </parent>
   <groupId>org.opendaylight.controller</groupId>
   <artifactId>releasepom</artifactId>
-  <version>0.3.0-SNAPSHOT</version>
+  <version>0.4.0-SNAPSHOT</version>
   <packaging>pom</packaging>
   <name>controller</name>
   <!-- Used by Sonar to set project name -->
@@ -24,7 +24,6 @@
     <module>opendaylight/model</module>
 
     <!-- Parents -->
-    <module>opendaylight/commons/concepts</module>
     <module>opendaylight/commons/protocol-framework</module>
     <module>opendaylight/commons/checkstyle</module>
     <module>opendaylight/commons/opendaylight</module>

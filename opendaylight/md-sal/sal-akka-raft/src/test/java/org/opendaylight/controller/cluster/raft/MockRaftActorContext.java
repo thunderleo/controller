@@ -13,15 +13,13 @@ import akka.actor.ActorSelection;
 import akka.actor.ActorSystem;
 import akka.actor.Props;
 import akka.japi.Procedure;
-import com.google.protobuf.GeneratedMessage;
 import java.io.Serializable;
 import java.util.HashMap;
 import java.util.Map;
 import org.opendaylight.controller.cluster.NonPersistentDataProvider;
+import org.opendaylight.controller.cluster.raft.behaviors.RaftActorBehavior;
 import org.opendaylight.controller.cluster.raft.policy.RaftPolicy;
 import org.opendaylight.controller.cluster.raft.protobuff.client.messages.Payload;
-import org.opendaylight.controller.protobuff.messages.cluster.raft.AppendEntriesMessages;
-import org.opendaylight.controller.protobuff.messages.cluster.raft.test.MockPayloadMessages;
 import org.slf4j.Logger;
 import org.slf4j.LoggerFactory;
 
@@ -183,26 +181,9 @@ public class MockRaftActorContext extends RaftActorContextImpl {
             this.size = size;
         }
 
-        @Override public Map<GeneratedMessage.GeneratedExtension<?, ?>, String> encode() {
-            Map<GeneratedMessage.GeneratedExtension<?, ?>, String> map = new HashMap<>();
-            map.put(MockPayloadMessages.value, value);
-            return map;
-        }
-
-        @Override public Payload decode(
-            AppendEntriesMessages.AppendEntries.ReplicatedLogEntry.Payload payloadProtoBuff) {
-            String value = payloadProtoBuff.getExtension(MockPayloadMessages.value);
-            this.value = value;
-            return this;
-        }
-
         @Override
         public int size() {
             return size;
-        }
-
-        @Override public String getClientPayloadClassName() {
-            return MockPayload.class.getName();
         }
 
         @Override
@@ -337,5 +318,10 @@ public class MockRaftActorContext extends RaftActorContextImpl {
         public ReplicatedLog build() {
             return this.mockLog;
         }
+    }
+
+    @Override
+    public void setCurrentBehavior(final RaftActorBehavior behavior) {
+        super.setCurrentBehavior(behavior);
     }
 }

@@ -13,17 +13,21 @@ import akka.pattern.Patterns;
 import akka.testkit.JavaTestKit;
 import akka.util.Timeout;
 import com.google.common.util.concurrent.Uninterruptibles;
+import java.util.Optional;
 import java.util.concurrent.TimeUnit;
 import java.util.concurrent.TimeoutException;
 import org.junit.Assert;
 import org.opendaylight.controller.cluster.raft.client.messages.FindLeader;
 import org.opendaylight.controller.cluster.raft.client.messages.FindLeaderReply;
+import org.slf4j.Logger;
+import org.slf4j.LoggerFactory;
 import scala.concurrent.Await;
 import scala.concurrent.Future;
 import scala.concurrent.duration.Duration;
 import scala.concurrent.duration.FiniteDuration;
 
 public class ShardTestKit extends JavaTestKit {
+    private static final Logger LOG = LoggerFactory.getLogger(ShardTestKit.class);
 
     public ShardTestKit(ActorSystem actorSystem) {
         super(actorSystem);
@@ -49,18 +53,17 @@ public class ShardTestKit extends JavaTestKit {
     public static String waitUntilLeader(ActorRef shard) {
         FiniteDuration duration = Duration.create(100, TimeUnit.MILLISECONDS);
         for(int i = 0; i < 20 * 5; i++) {
-            Future<Object> future = Patterns.ask(shard, new FindLeader(), new Timeout(duration));
+            Future<Object> future = Patterns.ask(shard, FindLeader.INSTANCE, new Timeout(duration));
             try {
-                FindLeaderReply resp = (FindLeaderReply)Await.result(future, duration);
-                if(resp.getLeaderActor() != null) {
-                    return resp.getLeaderActor();
+                final Optional<String> maybeLeader = ((FindLeaderReply)Await.result(future, duration)).getLeaderActor();
+                if (maybeLeader.isPresent()) {
+                    return maybeLeader.get();
                 }
             } catch(TimeoutException e) {
+                LOG.trace("FindLeader timed out", e);
             } catch(Exception e) {
-                System.err.println("FindLeader threw ex");
-                e.printStackTrace();
+                LOG.error("FindLeader failed", e);
             }
-
 
             Uninterruptibles.sleepUninterruptibly(50, TimeUnit.MILLISECONDS);
         }
@@ -73,19 +76,18 @@ public class ShardTestKit extends JavaTestKit {
         FiniteDuration duration = Duration.create(100, TimeUnit.MILLISECONDS);
         Object lastResponse = null;
         for(int i = 0; i < 20 * 5; i++) {
-            Future<Object> future = Patterns.ask(shard, new FindLeader(), new Timeout(duration));
+            Future<Object> future = Patterns.ask(shard, FindLeader.INSTANCE, new Timeout(duration));
             try {
-                FindLeaderReply resp = (FindLeaderReply)Await.result(future, duration);
-                if(resp.getLeaderActor() == null) {
+                final Optional<String> maybeLeader = ((FindLeaderReply)Await.result(future, duration)).getLeaderActor();
+                if (!maybeLeader.isPresent()) {
                     return;
                 }
 
-                lastResponse = resp.getLeaderActor();
+                lastResponse = maybeLeader.get();
             } catch(TimeoutException e) {
                 lastResponse = e;
             } catch(Exception e) {
-                System.err.println("FindLeader threw ex");
-                e.printStackTrace();
+                LOG.error("FindLeader failed", e);
                 lastResponse = e;
             }
 

@@ -7,10 +7,7 @@
  */
 package org.opendaylight.controller.cluster.datastore;
 
-import akka.actor.ActorSelection;
-import akka.dispatch.Futures;
 import akka.dispatch.OnComplete;
-import com.google.common.util.concurrent.FutureCallback;
 import com.google.common.util.concurrent.ListenableFuture;
 import com.google.common.util.concurrent.SettableFuture;
 import java.util.Arrays;
@@ -24,8 +21,7 @@ import scala.concurrent.Future;
 /**
  * A cohort proxy implementation for a single-shard transaction commit. If the transaction was a direct commit
  * to the shard, this implementation elides the CanCommitTransaction and CommitTransaction messages to the
- * shard as an optimization. Otherwise the 3-phase commit to the shard is delegated to a
- * ThreePhaseCommitCohortProxy instance (this is for backwards compatibility with pre-Lithium versions).
+ * shard as an optimization.
  *
  * @author Thomas Pantelis
  */
@@ -63,11 +59,6 @@ class SingleCommitCohortProxy extends AbstractThreePhaseCommitCohort<Object> {
 
                 operationCallbackRef.get().success();
 
-                if(cohortResponse instanceof ActorSelection) {
-                    handlePreLithiumActorCohort((ActorSelection)cohortResponse, returnFuture);
-                    return;
-                }
-
                 LOG.debug("Tx {} successfully completed direct commit", transactionId);
 
                 // The Future was the result of a direct commit to the shard, essentially eliding the
@@ -100,23 +91,5 @@ class SingleCommitCohortProxy extends AbstractThreePhaseCommitCohort<Object> {
     @Override
     List<Future<Object>> getCohortFutures() {
         return Arrays.asList(cohortFuture);
-    }
-
-    private void handlePreLithiumActorCohort(ActorSelection actorSelection, final SettableFuture<Boolean> returnFuture) {
-        // Handle backwards compatibility. An ActorSelection response would be returned from a
-        // pre-Lithium version. In this case delegate to a ThreePhaseCommitCohortProxy.
-        delegateCohort = new ThreePhaseCommitCohortProxy(actorContext,
-                Arrays.asList(Futures.successful(actorSelection)), transactionId);
-        com.google.common.util.concurrent.Futures.addCallback(delegateCohort.canCommit(), new FutureCallback<Boolean>() {
-            @Override
-            public void onSuccess(Boolean canCommit) {
-                returnFuture.set(canCommit);
-            }
-
-            @Override
-            public void onFailure(Throwable t) {
-                returnFuture.setException(t);
-            }
-        });
     }
 }

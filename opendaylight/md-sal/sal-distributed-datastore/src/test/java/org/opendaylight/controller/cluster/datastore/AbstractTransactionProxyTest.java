@@ -53,6 +53,7 @@ import org.opendaylight.controller.cluster.datastore.messages.BatchedModificatio
 import org.opendaylight.controller.cluster.datastore.messages.BatchedModificationsReply;
 import org.opendaylight.controller.cluster.datastore.messages.CommitTransactionReply;
 import org.opendaylight.controller.cluster.datastore.messages.CreateTransaction;
+import org.opendaylight.controller.cluster.datastore.messages.CreateTransactionReply;
 import org.opendaylight.controller.cluster.datastore.messages.DataExists;
 import org.opendaylight.controller.cluster.datastore.messages.DataExistsReply;
 import org.opendaylight.controller.cluster.datastore.messages.PrimaryShardInfo;
@@ -72,7 +73,6 @@ import org.opendaylight.controller.cluster.raft.utils.DoNothingActor;
 import org.opendaylight.controller.md.cluster.datastore.model.CarsModel;
 import org.opendaylight.controller.md.cluster.datastore.model.TestModel;
 import org.opendaylight.controller.md.sal.common.api.data.ReadFailedException;
-import org.opendaylight.controller.protobuff.messages.transaction.ShardTransactionMessages.CreateTransactionReply;
 import org.opendaylight.yangtools.yang.data.api.YangInstanceIdentifier;
 import org.opendaylight.yangtools.yang.data.api.schema.NormalizedNode;
 import org.opendaylight.yangtools.yang.data.api.schema.tree.DataTree;
@@ -187,25 +187,13 @@ public abstract class AbstractTransactionProxyTest {
         ArgumentMatcher<CreateTransaction> matcher = new ArgumentMatcher<CreateTransaction>() {
             @Override
             public boolean matches(Object argument) {
-                if(CreateTransaction.SERIALIZABLE_CLASS.equals(argument.getClass())) {
+                if(CreateTransaction.class.equals(argument.getClass())) {
                     CreateTransaction obj = CreateTransaction.fromSerializable(argument);
                     return obj.getTransactionId().startsWith(memberName) &&
                             obj.getTransactionType() == type.ordinal();
                 }
 
                 return false;
-            }
-        };
-
-        return argThat(matcher);
-    }
-
-    protected DataExists eqSerializedDataExists() {
-        ArgumentMatcher<DataExists> matcher = new ArgumentMatcher<DataExists>() {
-            @Override
-            public boolean matches(Object argument) {
-                return DataExists.SERIALIZABLE_CLASS.equals(argument.getClass()) &&
-                       DataExists.fromSerializable(argument).getPath().equals(TestModel.TEST_PATH);
             }
         };
 
@@ -224,28 +212,15 @@ public abstract class AbstractTransactionProxyTest {
         return argThat(matcher);
     }
 
-    protected ReadData eqSerializedReadData() {
-        return eqSerializedReadData(TestModel.TEST_PATH);
-    }
-
-    protected ReadData eqSerializedReadData(final YangInstanceIdentifier path) {
-        ArgumentMatcher<ReadData> matcher = new ArgumentMatcher<ReadData>() {
-            @Override
-            public boolean matches(Object argument) {
-                return ReadData.SERIALIZABLE_CLASS.equals(argument.getClass()) &&
-                       ReadData.fromSerializable(argument).getPath().equals(path);
-            }
-        };
-
-        return argThat(matcher);
-    }
-
     protected ReadData eqReadData() {
+        return eqReadData(TestModel.TEST_PATH);
+    }
+
+    protected ReadData eqReadData(final YangInstanceIdentifier path) {
         ArgumentMatcher<ReadData> matcher = new ArgumentMatcher<ReadData>() {
             @Override
             public boolean matches(Object argument) {
-                return (argument instanceof ReadData) &&
-                    ((ReadData)argument).getPath().equals(TestModel.TEST_PATH);
+                return (argument instanceof ReadData) && ((ReadData)argument).getPath().equals(path);
             }
         };
 
@@ -256,25 +231,13 @@ public abstract class AbstractTransactionProxyTest {
         return Futures.successful((Object)new ReadyTransactionReply(path));
     }
 
-    protected Future<Object> readSerializedDataReply(NormalizedNode<?, ?> data,
-            short transactionVersion) {
-        return Futures.successful(new ReadDataReply(data, transactionVersion).toSerializable());
-    }
-
-    protected Future<Object> readSerializedDataReply(NormalizedNode<?, ?> data) {
-        return readSerializedDataReply(data, DataStoreVersions.CURRENT_VERSION);
-    }
 
     protected Future<ReadDataReply> readDataReply(NormalizedNode<?, ?> data) {
         return Futures.successful(new ReadDataReply(data, DataStoreVersions.CURRENT_VERSION));
     }
 
-    protected Future<Object> dataExistsSerializedReply(boolean exists) {
-        return Futures.successful(DataExistsReply.create(exists).toSerializable());
-    }
-
     protected Future<DataExistsReply> dataExistsReply(boolean exists) {
-        return Futures.successful(DataExistsReply.create(exists));
+        return Futures.successful(new DataExistsReply(exists, DataStoreVersions.CURRENT_VERSION));
     }
 
     protected Future<BatchedModificationsReply> batchedModificationsReply(int count) {
@@ -292,7 +255,7 @@ public abstract class AbstractTransactionProxyTest {
 
     protected void expectBatchedModifications(ActorRef actorRef, int count) {
         doReturn(batchedModificationsReply(count)).when(mockActorContext).executeOperationAsync(
-                eq(actorSelection(actorRef)), isA(BatchedModifications.class));
+                eq(actorSelection(actorRef)), isA(BatchedModifications.class), any(Timeout.class));
     }
 
     protected void expectBatchedModificationsReady(ActorRef actorRef) {
@@ -302,22 +265,22 @@ public abstract class AbstractTransactionProxyTest {
     protected void expectBatchedModificationsReady(ActorRef actorRef, boolean doCommitOnReady) {
         doReturn(doCommitOnReady ? Futures.successful(new CommitTransactionReply().toSerializable()) :
             readyTxReply(actorRef.path().toString())).when(mockActorContext).executeOperationAsync(
-                    eq(actorSelection(actorRef)), isA(BatchedModifications.class));
+                    eq(actorSelection(actorRef)), isA(BatchedModifications.class), any(Timeout.class));
     }
 
     protected void expectBatchedModifications(int count) {
         doReturn(batchedModificationsReply(count)).when(mockActorContext).executeOperationAsync(
-                any(ActorSelection.class), isA(BatchedModifications.class));
+                any(ActorSelection.class), isA(BatchedModifications.class), any(Timeout.class));
     }
 
     protected void expectIncompleteBatchedModifications() {
         doReturn(incompleteFuture()).when(mockActorContext).executeOperationAsync(
-                any(ActorSelection.class), isA(BatchedModifications.class));
+                any(ActorSelection.class), isA(BatchedModifications.class), any(Timeout.class));
     }
 
     protected void expectFailedBatchedModifications(ActorRef actorRef) {
         doReturn(Futures.failed(new TestException())).when(mockActorContext).executeOperationAsync(
-                eq(actorSelection(actorRef)), isA(BatchedModifications.class));
+                eq(actorSelection(actorRef)), isA(BatchedModifications.class), any(Timeout.class));
     }
 
     protected void expectReadyLocalTransaction(ActorRef actorRef, boolean doCommitOnReady) {
@@ -326,12 +289,8 @@ public abstract class AbstractTransactionProxyTest {
                     eq(actorSelection(actorRef)), isA(ReadyLocalTransaction.class), any(Timeout.class));
     }
 
-    protected CreateTransactionReply createTransactionReply(ActorRef actorRef, int transactionVersion){
-        return CreateTransactionReply.newBuilder()
-            .setTransactionActorPath(actorRef.path().toString())
-            .setTransactionId("txn-1")
-            .setMessageVersion(transactionVersion)
-            .build();
+    protected CreateTransactionReply createTransactionReply(ActorRef actorRef, short transactionVersion){
+        return new CreateTransactionReply(actorRef.path().toString(), "txn-1", transactionVersion);
     }
 
     protected ActorRef setupActorContextWithoutInitialCreateTransaction(ActorSystem actorSystem) {
@@ -363,8 +322,6 @@ public abstract class AbstractTransactionProxyTest {
         doReturn(primaryShardInfoReply(actorSystem, actorRef, transactionVersion)).
                 when(mockActorContext).findPrimaryShardAsync(eq(shardName));
 
-        doReturn(false).when(mockActorContext).isPathLocal(actorRef.path().toString());
-
         return actorRef;
     }
 
@@ -381,7 +338,7 @@ public abstract class AbstractTransactionProxyTest {
             TransactionType type, short transactionVersion, String prefix, ActorRef shardActorRef) {
 
         ActorRef txActorRef;
-        if(type == TransactionType.WRITE_ONLY && transactionVersion >= DataStoreVersions.LITHIUM_VERSION &&
+        if(type == TransactionType.WRITE_ONLY &&
                 dataStoreContextBuilder.build().isWriteOnlyTransactionOptimizationsEnabled()) {
             txActorRef = shardActorRef;
         } else {
@@ -430,7 +387,7 @@ public abstract class AbstractTransactionProxyTest {
         ArgumentCaptor<BatchedModifications> batchedModificationsCaptor =
                 ArgumentCaptor.forClass(BatchedModifications.class);
         verify(mockActorContext, Mockito.atLeastOnce()).executeOperationAsync(
-                eq(actorSelection(actorRef)), batchedModificationsCaptor.capture());
+                eq(actorSelection(actorRef)), batchedModificationsCaptor.capture(), any(Timeout.class));
 
         List<BatchedModifications> batchedModifications = filterCaptured(
                 batchedModificationsCaptor, BatchedModifications.class);
@@ -499,8 +456,8 @@ public abstract class AbstractTransactionProxyTest {
                 Iterator<?> iter = futureResults.iterator();
                 while(iter.hasNext()) {
                     Object actual = iter.next();
-                    if(CommitTransactionReply.SERIALIZABLE_CLASS.isInstance(expReply) &&
-                       CommitTransactionReply.SERIALIZABLE_CLASS.isInstance(actual)) {
+                    if(CommitTransactionReply.isSerializedType(expReply) &&
+                       CommitTransactionReply.isSerializedType(actual)) {
                         found = true;
                     } else if(expReply instanceof ActorSelection && Objects.equal(expReply, actual)) {
                         found = true;

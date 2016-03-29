@@ -37,35 +37,25 @@ import org.opendaylight.yangtools.yang.data.api.schema.NormalizedNode;
  * Handles Messages <br/>
  * ---------------- <br/>
  * <li> {@link org.opendaylight.controller.cluster.datastore.messages.ReadData}
- * <li> {@link org.opendaylight.controller.cluster.datastore.messages.WriteData}
- * <li> {@link org.opendaylight.controller.cluster.datastore.messages.MergeData}
- * <li> {@link org.opendaylight.controller.cluster.datastore.messages.DeleteData}
- * <li> {@link org.opendaylight.controller.cluster.datastore.messages.ReadyTransaction}
  * <li> {@link org.opendaylight.controller.cluster.datastore.messages.CloseTransaction}
  * </p>
  */
 public abstract class ShardTransaction extends AbstractUntypedActorWithMetering {
-
-    protected static final boolean SERIALIZED_REPLY = true;
-
     private final ActorRef shardActor;
     private final ShardStats shardStats;
     private final String transactionID;
-    private final short clientTxVersion;
 
-    protected ShardTransaction(ActorRef shardActor, ShardStats shardStats, String transactionID,
-            short clientTxVersion) {
+    protected ShardTransaction(ActorRef shardActor, ShardStats shardStats, String transactionID) {
         super("shard-tx"); //actor name override used for metering. This does not change the "real" actor name
         this.shardActor = shardActor;
         this.shardStats = shardStats;
         this.transactionID = Preconditions.checkNotNull(transactionID);
-        this.clientTxVersion = clientTxVersion;
     }
 
     public static Props props(TransactionType type, AbstractShardDataTreeTransaction<?> transaction, ActorRef shardActor,
-            DatastoreContext datastoreContext, ShardStats shardStats, String transactionID, short txnClientVersion) {
+            DatastoreContext datastoreContext, ShardStats shardStats, String transactionID) {
         return Props.create(new ShardTransactionCreator(type, transaction, shardActor,
-           datastoreContext, shardStats, transactionID, txnClientVersion));
+           datastoreContext, shardStats, transactionID));
     }
 
     protected abstract AbstractShardDataTreeTransaction<?> getDOMStoreTransaction();
@@ -78,13 +68,9 @@ public abstract class ShardTransaction extends AbstractUntypedActorWithMetering 
         return transactionID;
     }
 
-    protected short getClientTxVersion() {
-        return clientTxVersion;
-    }
-
     @Override
     public void handleReceive(Object message) throws Exception {
-        if (message.getClass().equals(CloseTransaction.SERIALIZABLE_CLASS)) {
+        if (CloseTransaction.isSerializedType(message)) {
             closeTransaction(true);
         } else if (message instanceof ReceiveTimeout) {
             if(LOG.isDebugEnabled()) {
@@ -104,7 +90,7 @@ public abstract class ShardTransaction extends AbstractUntypedActorWithMetering 
         getDOMStoreTransaction().abort();
 
         if(sendReply && returnCloseTransactionReply()) {
-            getSender().tell(CloseTransactionReply.INSTANCE.toSerializable(), getSelf());
+            getSender().tell(new CloseTransactionReply(), getSelf());
         }
 
         getSelf().tell(PoisonPill.getInstance(), getSelf());
@@ -119,31 +105,25 @@ public abstract class ShardTransaction extends AbstractUntypedActorWithMetering 
         return ret;
     }
 
-    protected void readData(AbstractShardDataTreeTransaction<?> transaction, ReadData message,
-            final boolean returnSerialized) {
-
+    protected void readData(AbstractShardDataTreeTransaction<?> transaction, ReadData message) {
         if (checkClosed(transaction)) {
             return;
         }
 
         final YangInstanceIdentifier path = message.getPath();
         Optional<NormalizedNode<?, ?>> optional = transaction.getSnapshot().readNode(path);
-        ReadDataReply readDataReply = new ReadDataReply(optional.orNull(), clientTxVersion);
-        sender().tell((returnSerialized ? readDataReply.toSerializable(): readDataReply), self());
+        ReadDataReply readDataReply = new ReadDataReply(optional.orNull(), message.getVersion());
+        sender().tell(readDataReply.toSerializable(), self());
     }
 
-    protected void dataExists(AbstractShardDataTreeTransaction<?> transaction, DataExists message,
-        final boolean returnSerialized) {
-
+    protected void dataExists(AbstractShardDataTreeTransaction<?> transaction, DataExists message) {
         if (checkClosed(transaction)) {
             return;
         }
 
         final YangInstanceIdentifier path = message.getPath();
         boolean exists = transaction.getSnapshot().readNode(path).isPresent();
-        DataExistsReply dataExistsReply = DataExistsReply.create(exists);
-        getSender().tell(returnSerialized ? dataExistsReply.toSerializable() :
-            dataExistsReply, getSelf());
+        getSender().tell(new DataExistsReply(exists, message.getVersion()).toSerializable(), getSelf());
     }
 
     private static class ShardTransactionCreator implements Creator<ShardTransaction> {
@@ -155,17 +135,15 @@ public abstract class ShardTransaction extends AbstractUntypedActorWithMetering 
         final DatastoreContext datastoreContext;
         final ShardStats shardStats;
         final String transactionID;
-        final short txnClientVersion;
         final TransactionType type;
 
         ShardTransactionCreator(TransactionType type, AbstractShardDataTreeTransaction<?> transaction, ActorRef shardActor,
-                DatastoreContext datastoreContext, ShardStats shardStats, String transactionID, short txnClientVersion) {
+                DatastoreContext datastoreContext, ShardStats shardStats, String transactionID) {
             this.transaction = Preconditions.checkNotNull(transaction);
             this.shardActor = shardActor;
             this.shardStats = shardStats;
             this.datastoreContext = datastoreContext;
             this.transactionID = Preconditions.checkNotNull(transactionID);
-            this.txnClientVersion = txnClientVersion;
             this.type = type;
         }
 
@@ -175,15 +153,15 @@ public abstract class ShardTransaction extends AbstractUntypedActorWithMetering 
             switch (type) {
             case READ_ONLY:
                 tx = new ShardReadTransaction(transaction, shardActor,
-                    shardStats, transactionID, txnClientVersion);
+                    shardStats, transactionID);
                 break;
             case READ_WRITE:
                 tx = new ShardReadWriteTransaction((ReadWriteShardDataTreeTransaction)transaction,
-                    shardActor, shardStats, transactionID, txnClientVersion);
+                    shardActor, shardStats, transactionID);
                 break;
             case WRITE_ONLY:
                 tx = new ShardWriteTransaction((ReadWriteShardDataTreeTransaction)transaction,
-                    shardActor, shardStats, transactionID, txnClientVersion);
+                    shardActor, shardStats, transactionID);
                 break;
             default:
                 throw new IllegalArgumentException("Unhandled transaction type " + type);

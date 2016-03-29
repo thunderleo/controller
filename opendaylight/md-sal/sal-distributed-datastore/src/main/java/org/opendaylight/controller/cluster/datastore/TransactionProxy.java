@@ -12,6 +12,7 @@ import com.google.common.annotations.VisibleForTesting;
 import com.google.common.base.Function;
 import com.google.common.base.Optional;
 import com.google.common.base.Preconditions;
+import com.google.common.base.Supplier;
 import com.google.common.collect.Iterables;
 import com.google.common.util.concurrent.CheckedFuture;
 import com.google.common.util.concurrent.Futures;
@@ -74,7 +75,7 @@ public class TransactionProxy extends AbstractDOMStoreTransaction<TransactionIde
 
     @Override
     public CheckedFuture<Boolean, ReadFailedException> exists(final YangInstanceIdentifier path) {
-        return executeRead(shardNameFromIdentifier(path), new DataExists(path));
+        return executeRead(shardNameFromIdentifier(path), new DataExists(path, DataStoreVersions.CURRENT_VERSION));
     }
 
     private <T> CheckedFuture<T, ReadFailedException> executeRead(String shardName, final AbstractRead<T> readCmd) {
@@ -111,7 +112,7 @@ public class TransactionProxy extends AbstractDOMStoreTransaction<TransactionIde
 
     private CheckedFuture<Optional<NormalizedNode<?, ?>>, ReadFailedException> singleShardRead(
             final String shardName, final YangInstanceIdentifier path) {
-        return executeRead(shardName, new ReadData(path));
+        return executeRead(shardName, new ReadData(path, DataStoreVersions.CURRENT_VERSION));
     }
 
     private CheckedFuture<Optional<NormalizedNode<?, ?>>, ReadFailedException> readAllData() {
@@ -237,6 +238,7 @@ public class TransactionProxy extends AbstractDOMStoreTransaction<TransactionIde
         return debugContext == null ? ret : new DebugThreePhaseCommitCohort(getIdentifier(), ret, debugContext);
     }
 
+    @SuppressWarnings({ "rawtypes", "unchecked" })
     private AbstractThreePhaseCommitCohort<?> createSingleCommitCohort(final String shardName,
             final TransactionContextWrapper contextWrapper) {
 
@@ -252,43 +254,52 @@ public class TransactionProxy extends AbstractDOMStoreTransaction<TransactionIde
             contextWrapper.maybeExecuteTransactionOperation(new TransactionOperation() {
                 @Override
                 public void invoke(TransactionContext transactionContext) {
-                    promise.completeWith(getReadyOrDirectCommitFuture(transactionContext, operationCallbackRef));
+                    promise.completeWith(getDirectCommitFuture(transactionContext, operationCallbackRef));
                 }
             });
             future = promise.future();
         } else {
             // avoid the creation of a promise and a TransactionOperation
-            future = getReadyOrDirectCommitFuture(transactionContext, operationCallbackRef);
+            future = getDirectCommitFuture(transactionContext, operationCallbackRef);
         }
 
         return new SingleCommitCohortProxy(txContextFactory.getActorContext(), future, getIdentifier().toString(),
                 operationCallbackRef);
     }
 
-    private Future<?> getReadyOrDirectCommitFuture(TransactionContext transactionContext,
+    private Future<?> getDirectCommitFuture(TransactionContext transactionContext,
             OperationCallback.Reference operationCallbackRef) {
-        if (transactionContext.supportsDirectCommit()) {
-            TransactionRateLimitingCallback rateLimitingCallback = new TransactionRateLimitingCallback(
-                    txContextFactory.getActorContext());
-            operationCallbackRef.set(rateLimitingCallback);
-            rateLimitingCallback.run();
-            return transactionContext.directCommit();
-        } else {
-            return transactionContext.readyTransaction();
-        }
+        TransactionRateLimitingCallback rateLimitingCallback = new TransactionRateLimitingCallback(
+                txContextFactory.getActorContext());
+        operationCallbackRef.set(rateLimitingCallback);
+        rateLimitingCallback.run();
+        return transactionContext.directCommit();
     }
 
     private AbstractThreePhaseCommitCohort<ActorSelection> createMultiCommitCohort(
             final Set<Entry<String, TransactionContextWrapper>> txContextWrapperEntries) {
 
-        final List<Future<ActorSelection>> cohortFutures = new ArrayList<>(txContextWrapperEntries.size());
+        final List<ThreePhaseCommitCohortProxy.CohortInfo> cohorts = new ArrayList<>(txContextWrapperEntries.size());
         for (Entry<String, TransactionContextWrapper> e : txContextWrapperEntries) {
             LOG.debug("Tx {} Readying transaction for shard {}", getIdentifier(), e.getKey());
 
-            cohortFutures.add(e.getValue().readyTransaction());
+            final TransactionContextWrapper wrapper = e.getValue();
+
+            // The remote tx version is obtained the via TransactionContext which may not be available yet so
+            // we pass a Supplier to dynamically obtain it. Once the ready Future is resolved the
+            // TransactionContext is available.
+            Supplier<Short> txVersionSupplier = new Supplier<Short>() {
+                @Override
+                public Short get() {
+                    return wrapper.getTransactionContext().getTransactionVersion();
+                }
+            };
+
+            cohorts.add(new ThreePhaseCommitCohortProxy.CohortInfo(wrapper.readyTransaction(), txVersionSupplier));
         }
 
-        return new ThreePhaseCommitCohortProxy(txContextFactory.getActorContext(), cohortFutures, getIdentifier().toString());
+        return new ThreePhaseCommitCohortProxy(txContextFactory.getActorContext(), cohorts,
+                getIdentifier().toString());
     }
 
     private String shardNameFromIdentifier(final YangInstanceIdentifier path) {

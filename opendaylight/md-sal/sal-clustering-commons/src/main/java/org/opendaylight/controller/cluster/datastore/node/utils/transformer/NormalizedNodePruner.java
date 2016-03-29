@@ -9,24 +9,27 @@
 package org.opendaylight.controller.cluster.datastore.node.utils.transformer;
 
 import com.google.common.annotations.VisibleForTesting;
+import com.google.common.base.Optional;
 import com.google.common.base.Preconditions;
-
 import java.io.IOException;
 import java.net.URI;
-import java.util.HashSet;
 import java.util.LinkedList;
 import java.util.List;
-import java.util.Set;
-
 import javax.xml.transform.dom.DOMSource;
-
 import org.opendaylight.yangtools.yang.common.QName;
 import org.opendaylight.yangtools.yang.data.api.YangInstanceIdentifier;
+import org.opendaylight.yangtools.yang.data.api.YangInstanceIdentifier.PathArgument;
+import org.opendaylight.yangtools.yang.data.api.schema.AnyXmlNode;
+import org.opendaylight.yangtools.yang.data.api.schema.LeafNode;
 import org.opendaylight.yangtools.yang.data.api.schema.NormalizedNode;
 import org.opendaylight.yangtools.yang.data.api.schema.stream.NormalizedNodeStreamWriter;
 import org.opendaylight.yangtools.yang.data.impl.schema.Builders;
 import org.opendaylight.yangtools.yang.data.impl.schema.builder.api.NormalizedNodeContainerBuilder;
+import org.opendaylight.yangtools.yang.data.util.DataSchemaContextNode;
+import org.opendaylight.yangtools.yang.data.util.DataSchemaContextTree;
 import org.opendaylight.yangtools.yang.model.api.SchemaContext;
+import org.slf4j.Logger;
+import org.slf4j.LoggerFactory;
 
 /**
  * The NormalizedNodePruner removes all nodes from the input NormalizedNode that do not have a corresponding
@@ -34,36 +37,38 @@ import org.opendaylight.yangtools.yang.model.api.SchemaContext;
  *
  */
 public class NormalizedNodePruner implements NormalizedNodeStreamWriter {
+    private static final Logger LOG = LoggerFactory.getLogger(NormalizedNodePruner.class);
 
     public static final URI BASE_NAMESPACE = URI.create("urn:ietf:params:xml:ns:netconf:base:1.0");
     private final SimpleStack<NormalizedNodeBuilderWrapper> stack = new SimpleStack<>();
     private NormalizedNode<?,?> normalizedNode;
-    private final Set<URI> validNamespaces;
+    private final DataSchemaContextNode<?> nodePathSchemaNode;
     private boolean sealed = false;
 
-    public NormalizedNodePruner(SchemaContext schemaContext) {
-        this(NormalizedNodePruner.namespaces(schemaContext));
+    public NormalizedNodePruner(YangInstanceIdentifier nodePath, SchemaContext schemaContext) {
+        nodePathSchemaNode = findSchemaNodeForNodePath(nodePath, schemaContext);
     }
 
-    public NormalizedNodePruner(Set<URI> validNamespaces) {
-        this.validNamespaces = validNamespaces;
-    }
-
+    @SuppressWarnings("unchecked")
     @Override
     public void leafNode(YangInstanceIdentifier.NodeIdentifier nodeIdentifier, Object o) throws IOException, IllegalArgumentException {
 
         checkNotSealed();
 
-        if(!isValidNamespace(nodeIdentifier)){
-            return;
-        }
         NormalizedNodeBuilderWrapper parent = stack.peek();
-        Preconditions.checkState(parent != null, "leafNode has no parent");
-        parent.builder()
-                .addChild(Builders.leafBuilder()
-                        .withNodeIdentifier(nodeIdentifier)
-                        .withValue(o)
-                        .build());
+        LeafNode<Object> leafNode = Builders.leafBuilder().withNodeIdentifier(nodeIdentifier).withValue(o).build();
+        if(parent != null) {
+            if(hasValidSchema(nodeIdentifier.getNodeType(), parent)) {
+                parent.builder().addChild(leafNode);
+            }
+        } else {
+            // If there's no parent node then this is a stand alone LeafNode.
+            if(nodePathSchemaNode != null) {
+                this.normalizedNode = leafNode;
+            }
+
+            sealed = true;
+        }
     }
 
     @Override
@@ -82,22 +87,26 @@ public class NormalizedNodePruner implements NormalizedNodeStreamWriter {
         addBuilder(Builders.orderedLeafSetBuilder().withNodeIdentifier(nodeIdentifier), nodeIdentifier);
     }
 
+    @SuppressWarnings({ "unchecked" })
     @Override
-    public void leafSetEntryNode(Object o) throws IOException, IllegalArgumentException {
-
+    public void leafSetEntryNode(QName name, Object o) throws IOException, IllegalArgumentException {
         checkNotSealed();
 
         NormalizedNodeBuilderWrapper parent = stack.peek();
-        Preconditions.checkState(parent != null, "leafSetEntryNode has no parent");
-        if(!isValidNamespace(parent.identifier())){
-            return;
-        }
+        if(parent != null) {
+            if(hasValidSchema(name, parent)) {
+                parent.builder().addChild(Builders.leafSetEntryBuilder().withValue(o).withNodeIdentifier(
+                        new YangInstanceIdentifier.NodeWithValue<>(parent.nodeType(), o)).build());
+            }
+        } else {
+            // If there's no parent LeafSetNode then this is a stand alone LeafSetEntryNode.
+            if(nodePathSchemaNode != null) {
+                this.normalizedNode = Builders.leafSetEntryBuilder().withValue(o).withNodeIdentifier(
+                        new YangInstanceIdentifier.NodeWithValue<>(name, o)).build();
+            }
 
-        parent.builder()
-                .addChild(Builders.leafSetEntryBuilder()
-                        .withValue(o)
-                        .withNodeIdentifier(new YangInstanceIdentifier.NodeWithValue(parent.nodeType(), o))
-                        .build());
+            sealed = true;
+        }
     }
 
     @Override
@@ -169,17 +178,26 @@ public class NormalizedNodePruner implements NormalizedNodeStreamWriter {
         addBuilder(Builders.augmentationBuilder().withNodeIdentifier(augmentationIdentifier), augmentationIdentifier);
     }
 
+    @SuppressWarnings("unchecked")
     @Override
     public void anyxmlNode(YangInstanceIdentifier.NodeIdentifier nodeIdentifier, Object o) throws IOException, IllegalArgumentException {
-
         checkNotSealed();
 
-        if(!isValidNamespace(nodeIdentifier)){
-            return;
-        }
         NormalizedNodeBuilderWrapper parent = stack.peek();
-        Preconditions.checkState(parent != null, "anyxmlNode has no parent");
-        parent.builder().addChild(Builders.anyXmlBuilder().withNodeIdentifier(nodeIdentifier).withValue((DOMSource) o).build());
+        AnyXmlNode anyXmlNode = Builders.anyXmlBuilder().withNodeIdentifier(nodeIdentifier).
+                withValue((DOMSource) o).build();
+        if(parent != null) {
+            if(hasValidSchema(nodeIdentifier.getNodeType(), parent)) {
+                parent.builder().addChild(anyXmlNode);
+            }
+        } else {
+            // If there's no parent node then this is a stand alone AnyXmlNode.
+            if(nodePathSchemaNode != null) {
+                this.normalizedNode = anyXmlNode;
+            }
+
+            sealed = true;
+        }
     }
 
     @Override
@@ -191,12 +209,14 @@ public class NormalizedNodePruner implements NormalizedNodeStreamWriter {
 
         Preconditions.checkState(child != null, "endNode called on an empty stack");
 
-        if(!isValidNamespace(child.identifier())){
+        if(!child.getSchema().isPresent()) {
+            LOG.debug("Schema not found for {}", child.identifier());
             return;
         }
+
         NormalizedNode<?,?> normalizedNode = child.builder().build();
 
-        if(stack.size() > 0){
+        if(stack.size() > 0) {
             NormalizedNodeBuilderWrapper parent = stack.peek();
             parent.builder().addChild(normalizedNode);
         } else {
@@ -223,34 +243,43 @@ public class NormalizedNodePruner implements NormalizedNodeStreamWriter {
         Preconditions.checkState(!sealed, "Pruner can be used only once");
     }
 
-    private boolean isValidNamespace(QName qName){
-        return validNamespaces.contains(qName.getNamespace());
-    }
-
-    private boolean isValidNamespace(YangInstanceIdentifier.AugmentationIdentifier augmentationIdentifier){
-        Set<QName> possibleChildNames = augmentationIdentifier.getPossibleChildNames();
-
-        for(QName qName : possibleChildNames){
-            if(isValidNamespace(qName)){
-                return true;
-            }
-        }
-        return false;
-
-    }
-
-    private boolean isValidNamespace(YangInstanceIdentifier.PathArgument identifier){
-        if(identifier instanceof YangInstanceIdentifier.AugmentationIdentifier){
-            return isValidNamespace((YangInstanceIdentifier.AugmentationIdentifier) identifier);
+    private boolean hasValidSchema(QName name, NormalizedNodeBuilderWrapper parent) {
+        boolean valid = parent.getSchema().isPresent() && parent.getSchema().get().getChild(name) != null;
+        if(!valid) {
+            LOG.debug("Schema not found for {}", name);
         }
 
-        return isValidNamespace(identifier.getNodeType());
+        return valid;
     }
 
-    private NormalizedNodeBuilderWrapper addBuilder(NormalizedNodeContainerBuilder<?,?,?,?> builder, YangInstanceIdentifier.PathArgument identifier){
-        NormalizedNodeBuilderWrapper wrapper = new NormalizedNodeBuilderWrapper(builder, identifier);
+    private NormalizedNodeBuilderWrapper addBuilder(NormalizedNodeContainerBuilder<?,?,?,?> builder,
+            PathArgument identifier){
+        final Optional<DataSchemaContextNode<?>> schemaNode;
+        NormalizedNodeBuilderWrapper parent = stack.peek();
+        if(parent == null) {
+            schemaNode = Optional.fromNullable(nodePathSchemaNode);
+        } else if(parent.getSchema().isPresent()) {
+            schemaNode = Optional.fromNullable(parent.getSchema().get().getChild(identifier));
+        } else {
+            schemaNode = Optional.absent();
+        }
+
+        NormalizedNodeBuilderWrapper wrapper = new NormalizedNodeBuilderWrapper(builder, identifier, schemaNode);
         stack.push(wrapper);
         return wrapper;
+    }
+
+    private static DataSchemaContextNode<?> findSchemaNodeForNodePath(YangInstanceIdentifier nodePath,
+            SchemaContext schemaContext) {
+        DataSchemaContextNode<?> schemaNode = DataSchemaContextTree.from(schemaContext).getRoot();
+        for(PathArgument arg : nodePath.getPathArguments()) {
+            schemaNode = schemaNode.getChild(arg);
+            if(schemaNode == null) {
+                break;
+            }
+        }
+
+        return schemaNode;
     }
 
     @VisibleForTesting
@@ -279,19 +308,5 @@ public class NormalizedNodePruner implements NormalizedNodeStreamWriter {
         int size(){
             return stack.size();
         }
-    }
-
-    @VisibleForTesting
-    SimpleStack<NormalizedNodeBuilderWrapper> stack(){
-        return stack;
-    }
-
-    public static Set<URI> namespaces(SchemaContext schemaContext){
-        Set<URI> namespaces = new HashSet<>(schemaContext.getModules().size());
-        namespaces.add(BASE_NAMESPACE);
-        for(org.opendaylight.yangtools.yang.model.api.Module module : schemaContext.getModules()){
-            namespaces.add(module.getNamespace());
-        }
-        return namespaces;
     }
 }

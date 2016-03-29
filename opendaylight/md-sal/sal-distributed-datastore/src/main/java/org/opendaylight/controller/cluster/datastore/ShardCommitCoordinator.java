@@ -14,6 +14,8 @@ import com.google.common.annotations.VisibleForTesting;
 import com.google.common.base.Preconditions;
 import com.google.common.base.Stopwatch;
 import java.util.ArrayList;
+import java.util.Collection;
+import java.util.Collections;
 import java.util.HashMap;
 import java.util.Iterator;
 import java.util.LinkedList;
@@ -22,17 +24,21 @@ import java.util.Map;
 import java.util.Queue;
 import java.util.concurrent.ExecutionException;
 import java.util.concurrent.TimeUnit;
-import org.opendaylight.controller.cluster.datastore.compat.BackwardsCompatibleThreePhaseCommitCohort;
+import org.opendaylight.controller.cluster.datastore.ShardCommitCoordinator.CohortEntry.State;
 import org.opendaylight.controller.cluster.datastore.messages.AbortTransactionReply;
 import org.opendaylight.controller.cluster.datastore.messages.BatchedModifications;
 import org.opendaylight.controller.cluster.datastore.messages.BatchedModificationsReply;
+import org.opendaylight.controller.cluster.datastore.messages.CanCommitTransaction;
 import org.opendaylight.controller.cluster.datastore.messages.CanCommitTransactionReply;
+import org.opendaylight.controller.cluster.datastore.messages.CommitTransaction;
 import org.opendaylight.controller.cluster.datastore.messages.ForwardedReadyTransaction;
 import org.opendaylight.controller.cluster.datastore.messages.ReadyLocalTransaction;
 import org.opendaylight.controller.cluster.datastore.messages.ReadyTransactionReply;
 import org.opendaylight.controller.cluster.datastore.modification.Modification;
+import org.opendaylight.controller.cluster.datastore.utils.AbstractBatchedModificationsCursor;
 import org.opendaylight.controller.md.sal.common.api.data.TransactionCommitFailedException;
 import org.opendaylight.yangtools.yang.data.api.schema.tree.DataTreeCandidate;
+import org.opendaylight.yangtools.yang.data.api.schema.tree.DataTreeModification;
 import org.slf4j.Logger;
 
 /**
@@ -136,41 +142,22 @@ class ShardCommitCoordinator {
                 ready.getTransactionID(), ready.getTxnClientVersion());
 
         ShardDataTreeCohort cohort = ready.getTransaction().ready();
-        CohortEntry cohortEntry = new CohortEntry(ready.getTransactionID(), cohort);
+        CohortEntry cohortEntry = new CohortEntry(ready.getTransactionID(), cohort, ready.getTxnClientVersion());
         cohortCache.put(ready.getTransactionID(), cohortEntry);
 
         if(!queueCohortEntry(cohortEntry, sender, shard)) {
             return;
         }
 
-        if(ready.getTxnClientVersion() < DataStoreVersions.LITHIUM_VERSION) {
-            // Return our actor path as we'll handle the three phase commit except if the Tx client
-            // version < Helium-1 version which means the Tx was initiated by a base Helium version node.
-            // In that case, the subsequent 3-phase commit messages won't contain the transactionId so to
-            // maintain backwards compatibility, we create a separate cohort actor to provide the compatible behavior.
-            ActorRef replyActorPath = shard.self();
-            if(ready.getTxnClientVersion() < DataStoreVersions.HELIUM_1_VERSION) {
-                log.debug("{}: Creating BackwardsCompatibleThreePhaseCommitCohort", name);
-                replyActorPath = shard.getContext().actorOf(BackwardsCompatibleThreePhaseCommitCohort.props(
-                        ready.getTransactionID()));
-            }
-
-            ReadyTransactionReply readyTransactionReply =
-                    new ReadyTransactionReply(Serialization.serializedActorPath(replyActorPath),
-                            ready.getTxnClientVersion());
-            sender.tell(ready.isReturnSerialized() ? readyTransactionReply.toSerializable() :
-                readyTransactionReply, shard.self());
+        if(ready.isDoImmediateCommit()) {
+            cohortEntry.setDoImmediateCommit(true);
+            cohortEntry.setReplySender(sender);
+            cohortEntry.setShard(shard);
+            handleCanCommit(cohortEntry);
         } else {
-            if(ready.isDoImmediateCommit()) {
-                cohortEntry.setDoImmediateCommit(true);
-                cohortEntry.setReplySender(sender);
-                cohortEntry.setShard(shard);
-                handleCanCommit(cohortEntry);
-            } else {
-                // The caller does not want immediate commit - the 3-phase commit will be coordinated by the
-                // front-end so send back a ReadyTransactionReply with our actor path.
-                sender.tell(readyTransactionReply(shard), shard.self());
-            }
+            // The caller does not want immediate commit - the 3-phase commit will be coordinated by the
+            // front-end so send back a ReadyTransactionReply with our actor path.
+            sender.tell(readyTransactionReply(shard), shard.self());
         }
     }
 
@@ -189,7 +176,7 @@ class ShardCommitCoordinator {
         if(cohortEntry == null) {
             cohortEntry = new CohortEntry(batched.getTransactionID(),
                     dataTree.newReadWriteTransaction(batched.getTransactionID(),
-                        batched.getTransactionChainID()));
+                        batched.getTransactionChainID()), batched.getVersion());
             cohortCache.put(batched.getTransactionID(), cohortEntry);
         }
 
@@ -247,7 +234,8 @@ class ShardCommitCoordinator {
     void handleReadyLocalTransaction(ReadyLocalTransaction message, ActorRef sender, Shard shard) {
         final ShardDataTreeCohort cohort = new SimpleShardDataTreeCohort(dataTree, message.getModification(),
                 message.getTransactionID());
-        final CohortEntry cohortEntry = new CohortEntry(message.getTransactionID(), cohort);
+        final CohortEntry cohortEntry = new CohortEntry(message.getTransactionID(), cohort,
+                DataStoreVersions.CURRENT_VERSION);
         cohortCache.put(message.getTransactionID(), cohortEntry);
         cohortEntry.setDoImmediateCommit(message.isDoCommitOnReady());
 
@@ -264,6 +252,36 @@ class ShardCommitCoordinator {
         } else {
             sender.tell(readyTransactionReply(shard), shard.self());
         }
+    }
+
+    Collection<BatchedModifications> createForwardedBatchedModifications(final BatchedModifications from,
+            final int maxModificationsPerBatch) {
+        CohortEntry cohortEntry = getAndRemoveCohortEntry(from.getTransactionID());
+        if(cohortEntry == null || cohortEntry.getTransaction() == null) {
+            return Collections.singletonList(from);
+        }
+
+        cohortEntry.applyModifications(from.getModifications());
+
+        final LinkedList<BatchedModifications> newModifications = new LinkedList<>();
+        cohortEntry.getTransaction().getSnapshot().applyToCursor(new AbstractBatchedModificationsCursor() {
+            @Override
+            protected BatchedModifications getModifications() {
+                if(newModifications.isEmpty() ||
+                        newModifications.getLast().getModifications().size() >= maxModificationsPerBatch) {
+                    newModifications.add(new BatchedModifications(from.getTransactionID(),
+                            from.getVersion(), from.getTransactionChainID()));
+                }
+
+                return newModifications.getLast();
+            }
+        });
+
+        BatchedModifications last = newModifications.getLast();
+        last.setDoCommitOnReady(from.isDoCommitOnReady());
+        last.setReady(from.isReady());
+        last.setTotalMessagesSent(newModifications.size());
+        return newModifications;
     }
 
     private void handleCanCommit(CohortEntry cohortEntry) {
@@ -291,8 +309,9 @@ class ShardCommitCoordinator {
             doCanCommit(currentCohortEntry);
         } else {
             if(log.isDebugEnabled()) {
-                log.debug("{}: Tx {} is the next pending canCommit - skipping {} for now",
-                        name, queuedCohortEntries.peek().getTransactionID(), transactionID);
+                log.debug("{}: Tx {} is the next pending canCommit - skipping {} for now", name,
+                        queuedCohortEntries.peek() != null ? queuedCohortEntries.peek().getTransactionID() : "???",
+                                transactionID);
             }
         }
     }
@@ -340,8 +359,9 @@ class ShardCommitCoordinator {
                 }
             } else {
                 cohortEntry.getReplySender().tell(
-                        canCommit ? CanCommitTransactionReply.YES.toSerializable() :
-                            CanCommitTransactionReply.NO.toSerializable(), cohortEntry.getShard().self());
+                        canCommit ? CanCommitTransactionReply.yes(cohortEntry.getClientVersion()).toSerializable() :
+                            CanCommitTransactionReply.no(cohortEntry.getClientVersion()).toSerializable(),
+                        cohortEntry.getShard().self());
             }
         } catch (Exception e) {
             log.debug("{}: An exception occurred during canCommit", name, e);
@@ -440,7 +460,7 @@ class ShardCommitCoordinator {
             shard.getShardMBean().incrementAbortTransactionsCount();
 
             if(sender != null) {
-                sender.tell(new AbortTransactionReply().toSerializable(), self);
+                sender.tell(AbortTransactionReply.instance(cohortEntry.getClientVersion()).toSerializable(), self);
             }
         } catch (Exception e) {
             log.error("{}: An exception happened during abort", name, e);
@@ -470,21 +490,80 @@ class ShardCommitCoordinator {
             return;
         }
 
-        List<CohortEntry> cohortEntries = new ArrayList<>();
+        List<CohortEntry> cohortEntries = getAndClearPendingCohortEntries();
 
-        if(currentCohortEntry != null) {
-            cohortEntries.add(currentCohortEntry);
-            currentCohortEntry = null;
-        }
-
-        cohortEntries.addAll(queuedCohortEntries);
-        queuedCohortEntries.clear();
+        log.debug("{}: Aborting {} pending queued transactions", name, cohortEntries.size());
 
         for(CohortEntry cohortEntry: cohortEntries) {
             if(cohortEntry.getReplySender() != null) {
                 cohortEntry.getReplySender().tell(new Failure(new RuntimeException(reason)), shard.self());
             }
         }
+    }
+
+    private List<CohortEntry> getAndClearPendingCohortEntries() {
+        List<CohortEntry> cohortEntries = new ArrayList<>();
+        if(currentCohortEntry != null) {
+            cohortEntries.add(currentCohortEntry);
+            cohortCache.remove(currentCohortEntry.getTransactionID());
+            currentCohortEntry = null;
+        }
+
+        for(CohortEntry cohortEntry: queuedCohortEntries) {
+            cohortEntries.add(cohortEntry);
+            cohortCache.remove(cohortEntry.getTransactionID());
+        }
+
+        queuedCohortEntries.clear();
+        return cohortEntries;
+    }
+
+    Collection<Object> convertPendingTransactionsToMessages(final int maxModificationsPerBatch) {
+        if(currentCohortEntry == null && queuedCohortEntries.isEmpty()) {
+            return Collections.emptyList();
+        }
+
+        Collection<Object> messages = new ArrayList<>();
+        List<CohortEntry> cohortEntries = getAndClearPendingCohortEntries();
+        for(CohortEntry cohortEntry: cohortEntries) {
+            if(cohortEntry.isExpired(cacheExpiryTimeoutInMillis) || cohortEntry.isAborted()) {
+                continue;
+            }
+
+            final LinkedList<BatchedModifications> newModifications = new LinkedList<>();
+            cohortEntry.getDataTreeModification().applyToCursor(new AbstractBatchedModificationsCursor() {
+                @Override
+                protected BatchedModifications getModifications() {
+                    if(newModifications.isEmpty() ||
+                            newModifications.getLast().getModifications().size() >= maxModificationsPerBatch) {
+                        newModifications.add(new BatchedModifications(cohortEntry.getTransactionID(),
+                                cohortEntry.getClientVersion(), ""));
+                    }
+
+                    return newModifications.getLast();
+                }
+            });
+
+            if(!newModifications.isEmpty()) {
+                BatchedModifications last = newModifications.getLast();
+                last.setDoCommitOnReady(cohortEntry.isDoImmediateCommit());
+                last.setReady(true);
+                last.setTotalMessagesSent(newModifications.size());
+                messages.addAll(newModifications);
+
+                if(!cohortEntry.isDoImmediateCommit() && cohortEntry.getState() == State.CAN_COMMITTED) {
+                    messages.add(new CanCommitTransaction(cohortEntry.getTransactionID(),
+                            cohortEntry.getClientVersion()));
+                }
+
+                if(!cohortEntry.isDoImmediateCommit() && cohortEntry.getState() == State.PRE_COMMITTED) {
+                    messages.add(new CommitTransaction(cohortEntry.getTransactionID(),
+                            cohortEntry.getClientVersion()));
+                }
+            }
+        }
+
+        return messages;
     }
 
     /**
@@ -596,6 +675,14 @@ class ShardCommitCoordinator {
     }
 
     static class CohortEntry {
+        enum State {
+            PENDING,
+            CAN_COMMITTED,
+            PRE_COMMITTED,
+            COMMITTED,
+            ABORTED
+        }
+
         private final String transactionID;
         private ShardDataTreeCohort cohort;
         private final ReadWriteShardDataTreeTransaction transaction;
@@ -605,17 +692,20 @@ class ShardCommitCoordinator {
         private boolean doImmediateCommit;
         private final Stopwatch lastAccessTimer = Stopwatch.createStarted();
         private int totalBatchedModificationsReceived;
-        private boolean aborted;
+        private State state = State.PENDING;
+        private final short clientVersion;
 
-        CohortEntry(String transactionID, ReadWriteShardDataTreeTransaction transaction) {
+        CohortEntry(String transactionID, ReadWriteShardDataTreeTransaction transaction, short clientVersion) {
             this.transaction = Preconditions.checkNotNull(transaction);
             this.transactionID = transactionID;
+            this.clientVersion = clientVersion;
         }
 
-        CohortEntry(String transactionID, ShardDataTreeCohort cohort) {
+        CohortEntry(String transactionID, ShardDataTreeCohort cohort, short clientVersion) {
             this.transactionID = transactionID;
             this.cohort = cohort;
             this.transaction = null;
+            this.clientVersion = clientVersion;
         }
 
         void updateLastAccessTime() {
@@ -627,8 +717,24 @@ class ShardCommitCoordinator {
             return transactionID;
         }
 
+        short getClientVersion() {
+            return clientVersion;
+        }
+
+        State getState() {
+            return state;
+        }
+
         DataTreeCandidate getCandidate() {
             return cohort.getCandidate();
+        }
+
+        DataTreeModification getDataTreeModification() {
+            return cohort.getDataTreeModification();
+        }
+
+        ReadWriteShardDataTreeTransaction getTransaction() {
+            return transaction;
         }
 
         int getTotalBatchedModificationsReceived() {
@@ -654,6 +760,8 @@ class ShardCommitCoordinator {
         }
 
         boolean canCommit() throws InterruptedException, ExecutionException {
+            state = State.CAN_COMMITTED;
+
             // We block on the future here (and also preCommit(), commit(), abort()) so we don't have to worry
             // about possibly accessing our state on a different thread outside of our dispatcher.
             // TODO: the ShardDataTreeCohort returns immediate Futures anyway which begs the question - why
@@ -663,15 +771,17 @@ class ShardCommitCoordinator {
         }
 
         void preCommit() throws InterruptedException, ExecutionException {
+            state = State.PRE_COMMITTED;
             cohort.preCommit().get();
         }
 
         void commit() throws InterruptedException, ExecutionException {
+            state = State.COMMITTED;
             cohort.commit().get();
         }
 
         void abort() throws InterruptedException, ExecutionException {
-            aborted = true;
+            state = State.ABORTED;
             cohort.abort().get();
         }
 
@@ -722,7 +832,7 @@ class ShardCommitCoordinator {
 
 
         boolean isAborted() {
-            return aborted;
+            return state == State.ABORTED;
         }
 
         @Override

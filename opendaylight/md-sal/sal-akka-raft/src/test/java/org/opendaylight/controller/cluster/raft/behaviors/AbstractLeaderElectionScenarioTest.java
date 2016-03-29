@@ -25,8 +25,8 @@ import org.junit.After;
 import org.junit.Before;
 import org.opendaylight.controller.cluster.raft.DefaultConfigParamsImpl;
 import org.opendaylight.controller.cluster.raft.MockRaftActorContext;
-import org.opendaylight.controller.cluster.raft.RaftActorContext;
 import org.opendaylight.controller.cluster.raft.RaftState;
+import org.opendaylight.controller.cluster.raft.TestActorFactory;
 import org.opendaylight.controller.cluster.raft.base.messages.SendHeartBeat;
 import org.opendaylight.controller.cluster.raft.messages.AppendEntriesReply;
 import org.opendaylight.controller.cluster.raft.utils.MessageCollectorActor;
@@ -140,6 +140,7 @@ public class AbstractLeaderElectionScenarioTest {
 
     protected final Logger testLog = LoggerFactory.getLogger(MockRaftActorContext.class);
     protected final ActorSystem system = ActorSystem.create("test");
+    protected final TestActorFactory factory = new TestActorFactory(system);
     protected TestActorRef<MemberActor> member1ActorRef;
     protected TestActorRef<MemberActor> member2ActorRef;
     protected TestActorRef<MemberActor> member3ActorRef;
@@ -197,13 +198,14 @@ public class AbstractLeaderElectionScenarioTest {
         assertEquals(name + " behavior state", expState, actor.behavior.state());
     }
 
-    void initializeLeaderBehavior(MemberActor actor, RaftActorContext context, int numActiveFollowers) throws Exception {
+    void initializeLeaderBehavior(MemberActor actor, MockRaftActorContext context, int numActiveFollowers) throws Exception {
         // Leader sends immediate heartbeats - we don't care about it so ignore it.
 
         actor.expectMessageClass(AppendEntriesReply.class, numActiveFollowers);
 
-        @SuppressWarnings("resource")
         Leader leader = new Leader(context);
+        context.setCurrentBehavior(leader);
+
         actor.waitForExpectedMessages(AppendEntriesReply.class);
         // Delay assignment here so the AppendEntriesReply isn't forwarded to the behavior.
         actor.behavior = leader;
@@ -214,13 +216,14 @@ public class AbstractLeaderElectionScenarioTest {
     }
 
     TestActorRef<MemberActor> newMemberActor(String name) throws Exception {
-        TestActorRef<MemberActor> actor = TestActorRef.create(system, MemberActor.props(), name);
+        TestActorRef<MemberActor> actor = factory.createTestActor(MemberActor.props().
+                withDispatcher(Dispatchers.DefaultDispatcherId()), name);
         MessageCollectorActor.waitUntilReady(actor);
         return actor;
     }
 
     void sendHeartbeat(TestActorRef<MemberActor> leaderActor) {
         Uninterruptibles.sleepUninterruptibly(HEARTBEAT_INTERVAL, TimeUnit.MILLISECONDS);
-        leaderActor.underlyingActor().behavior.handleMessage(leaderActor, new SendHeartBeat());
+        leaderActor.underlyingActor().behavior.handleMessage(leaderActor, SendHeartBeat.INSTANCE);
     }
 }

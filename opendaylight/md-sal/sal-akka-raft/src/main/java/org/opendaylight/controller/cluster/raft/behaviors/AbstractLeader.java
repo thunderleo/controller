@@ -16,6 +16,7 @@ import com.google.common.base.Optional;
 import com.google.common.base.Preconditions;
 import com.google.protobuf.ByteString;
 import java.io.IOException;
+import java.util.Arrays;
 import java.util.Collection;
 import java.util.Collections;
 import java.util.HashMap;
@@ -91,8 +92,8 @@ public abstract class AbstractLeader extends AbstractRaftActorBehavior {
 
     private Optional<SnapshotHolder> snapshot;
 
-    public AbstractLeader(RaftActorContext context) {
-        super(context, RaftState.Leader);
+    protected AbstractLeader(RaftActorContext context, RaftState state) {
+        super(context, state);
 
         setLeaderPayloadVersion(context.getPayloadVersion());
 
@@ -140,6 +141,7 @@ public abstract class AbstractLeader extends AbstractRaftActorBehavior {
 
     public void removeFollower(String followerId) {
         followerToLog.remove(followerId);
+        mapFollowerToSnapshot.remove(followerId);
     }
 
     public void updateMinReplicaCount() {
@@ -210,6 +212,7 @@ public abstract class AbstractLeader extends AbstractRaftActorBehavior {
 
         followerLogInformation.markFollowerActive();
         followerLogInformation.setPayloadVersion(appendEntriesReply.getPayloadVersion());
+        followerLogInformation.setRaftVersion(appendEntriesReply.getRaftVersion());
 
         boolean updated = false;
         if (appendEntriesReply.isSuccess()) {
@@ -254,17 +257,25 @@ public abstract class AbstractLeader extends AbstractRaftActorBehavior {
             int replicatedCount = 1;
 
             for (FollowerLogInformation info : followerToLog.values()) {
-                if ((info.getMatchIndex() >= N) && (context.getPeerInfo(followerId).isVoting())) {
+                final PeerInfo peerInfo = context.getPeerInfo(info.getId());
+                if(info.getMatchIndex() >= N && (peerInfo != null && peerInfo.isVoting())) {
                     replicatedCount++;
                 }
             }
 
             if (replicatedCount >= minReplicationCount) {
                 ReplicatedLogEntry replicatedLogEntry = context.getReplicatedLog().get(N);
-                if (replicatedLogEntry != null && replicatedLogEntry.getTerm() == currentTerm()) {
-                    context.setCommitIndex(N);
-                } else {
+                if (replicatedLogEntry == null) {
                     break;
+                }
+
+                // Don't update the commit index if the log entry is from a previous term, as per §5.4.1:
+                // "Raft never commits log entries from previous terms by counting replicas".
+                // However we keep looping so we can make progress when new entries in the current term
+                // reach consensus, as per §5.4.1: "once an entry from the current term is committed by
+                // counting replicas, then all prior entries are committed indirectly".
+                if (replicatedLogEntry.getTerm() == currentTerm()) {
+                    context.setCommitIndex(N);
                 }
             } else {
                 break;
@@ -615,7 +626,7 @@ public abstract class AbstractLeader extends AbstractRaftActorBehavior {
                     appendEntries);
         }
 
-        followerActor.tell(appendEntries.toSerializable(), actor());
+        followerActor.tell(appendEntries, actor());
     }
 
     /**
@@ -680,7 +691,7 @@ public abstract class AbstractLeader extends AbstractRaftActorBehavior {
     private void sendSnapshotChunk(ActorSelection followerActor, String followerId) {
         try {
             if (snapshot.isPresent()) {
-                ByteString nextSnapshotChunk = getNextSnapshotChunk(followerId, snapshot.get().getSnapshotBytes());
+                byte[] nextSnapshotChunk = getNextSnapshotChunk(followerId, snapshot.get().getSnapshotBytes());
 
                 // Note: the previous call to getNextSnapshotChunk has the side-effect of adding
                 // followerId to the followerToSnapshot map.
@@ -694,7 +705,7 @@ public abstract class AbstractLeader extends AbstractRaftActorBehavior {
                         followerToSnapshot.incrementChunkIndex(),
                         followerToSnapshot.getTotalChunks(),
                         Optional.of(followerToSnapshot.getLastChunkHashCode())
-                    ).toSerializable(),
+                    ).toSerializable(followerToLog.get(followerId).getRaftVersion()),
                     actor()
                 );
 
@@ -713,15 +724,15 @@ public abstract class AbstractLeader extends AbstractRaftActorBehavior {
      * Acccepts snaphot as ByteString, enters into map for future chunks
      * creates and return a ByteString chunk
      */
-    private ByteString getNextSnapshotChunk(String followerId, ByteString snapshotBytes) throws IOException {
+    private byte[] getNextSnapshotChunk(String followerId, ByteString snapshotBytes) throws IOException {
         FollowerToSnapshot followerToSnapshot = mapFollowerToSnapshot.get(followerId);
         if (followerToSnapshot == null) {
             followerToSnapshot = new FollowerToSnapshot(snapshotBytes);
             mapFollowerToSnapshot.put(followerId, followerToSnapshot);
         }
-        ByteString nextChunk = followerToSnapshot.getNextChunk();
+        byte[] nextChunk = followerToSnapshot.getNextChunk();
 
-        LOG.debug("{}: next snapshot chunk size for follower {}: {}", logName(), followerId, nextChunk.size());
+        LOG.debug("{}: next snapshot chunk size for follower {}: {}", logName(), followerId, nextChunk.length);
 
         return nextChunk;
     }
@@ -754,7 +765,7 @@ public abstract class AbstractLeader extends AbstractRaftActorBehavior {
         // need to be sent if there are other messages being sent to the remote
         // actor.
         heartbeatSchedule = context.getActorSystem().scheduler().scheduleOnce(
-            interval, context.getActor(), new SendHeartBeat(),
+            interval, context.getActor(), SendHeartBeat.INSTANCE,
             context.getActorSystem().dispatcher(), context.getActor());
     }
 
@@ -860,25 +871,23 @@ public abstract class AbstractLeader extends AbstractRaftActorBehavior {
             }
         }
 
-        public ByteString getNextChunk() {
+        public byte[] getNextChunk() {
             int snapshotLength = getSnapshotBytes().size();
             int start = incrementOffset();
             int size = context.getConfigParams().getSnapshotChunkSize();
             if (context.getConfigParams().getSnapshotChunkSize() > snapshotLength) {
                 size = snapshotLength;
-            } else {
-                if ((start + context.getConfigParams().getSnapshotChunkSize()) > snapshotLength) {
-                    size = snapshotLength - start;
-                }
+            } else if ((start + context.getConfigParams().getSnapshotChunkSize()) > snapshotLength) {
+                size = snapshotLength - start;
             }
 
+            byte[] nextChunk = new byte[size];
+            getSnapshotBytes().copyTo(nextChunk, start, 0, size);
+            nextChunkHashCode = Arrays.hashCode(nextChunk);
 
-            LOG.debug("{}: Next chunk: length={}, offset={},size={}", logName(),
-                    snapshotLength, start, size);
-
-            ByteString substring = getSnapshotBytes().substring(start, start + size);
-            nextChunkHashCode = substring.hashCode();
-            return substring;
+            LOG.debug("{}: Next chunk: total length={}, offset={}, size={}, hashCode={}", logName(),
+                    snapshotLength, start, size, nextChunkHashCode);
+            return nextChunk;
         }
 
         /**

@@ -12,7 +12,7 @@
   <parent>
     <groupId>org.opendaylight.controller</groupId>
     <artifactId>sal-parent</artifactId>
-    <version>1.3.0-SNAPSHOT</version>
+    <version>1.4.0-SNAPSHOT</version>
   </parent>
   <artifactId>sal-clustering-config</artifactId>
   <description>Configuration files for md-sal clustering</description>
@@ -45,6 +45,11 @@
                   <file>${project.build.directory}/classes/initial/akka.conf</file>
                   <type>xml</type>
                   <classifier>akkaconf</classifier>
+                </artifact>
+                <artifact>
+                  <file>${project.build.directory}/classes/initial/factory-akka.conf</file>
+                  <type>xml</type>
+                  <classifier>factoryakkaconf</classifier>
                 </artifact>
                 <artifact>
                   <file>${project.build.directory}/classes/initial/module-shards.conf</file>

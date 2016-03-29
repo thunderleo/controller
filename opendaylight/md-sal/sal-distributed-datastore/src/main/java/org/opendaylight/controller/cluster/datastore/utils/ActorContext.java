@@ -25,6 +25,7 @@ import com.google.common.base.Optional;
 import com.google.common.base.Preconditions;
 import com.google.common.base.Strings;
 import java.util.concurrent.TimeUnit;
+import java.util.function.Function;
 import org.opendaylight.controller.cluster.datastore.ClusterWrapper;
 import org.opendaylight.controller.cluster.datastore.DataStoreVersions;
 import org.opendaylight.controller.cluster.datastore.DatastoreContext;
@@ -82,7 +83,7 @@ public class ActorContext {
             return actualFailure;
         }
     };
-    public static final String MAILBOX = "bounded-mailbox";
+    public static final String BOUNDED_MAILBOX = "bounded-mailbox";
     public static final String COMMIT = "commit";
 
     private final ActorSystem actorSystem;
@@ -380,7 +381,7 @@ public class ActorContext {
     public void shutdown() {
         FiniteDuration duration = datastoreContext.getShardRaftConfig().getElectionTimeOutInterval().$times(3);
         try {
-            Await.ready(Patterns.gracefulStop(shardManager, duration, new Shutdown()), duration);
+            Await.ready(Patterns.gracefulStop(shardManager, duration, Shutdown.INSTANCE), duration);
         } catch(Exception e) {
             LOG.warn("ShardManager for {} data store did not shutdown gracefully", getDataStoreName(), e);
         }
@@ -399,13 +400,14 @@ public class ActorContext {
      *
      * @param message
      */
-    public void broadcast(final Object message){
+    public void broadcast(final Function<Short, Object> messageSupplier){
         for(final String shardName : configuration.getAllShardNames()){
 
             Future<PrimaryShardInfo> primaryFuture = findPrimaryShardAsync(shardName);
             primaryFuture.onComplete(new OnComplete<PrimaryShardInfo>() {
                 @Override
                 public void onComplete(Throwable failure, PrimaryShardInfo primaryShardInfo) {
+                    Object message = messageSupplier.apply(primaryShardInfo.getPrimaryShardVersion());
                     if(failure != null) {
                         LOG.warn("broadcast failed to send message {} to shard {}:  {}",
                                 message.getClass().getSimpleName(), shardName, failure);
@@ -453,30 +455,6 @@ public class ActorContext {
     }
 
     /**
-     * @deprecated This method is present only to support backward compatibility with Helium and should not be
-     * used any further
-     *
-     *
-     * @param primaryPath
-     * @param localPathOfRemoteActor
-     * @return
-    */
-    @Deprecated
-    public String resolvePath(final String primaryPath,
-                                            final String localPathOfRemoteActor) {
-        StringBuilder builder = new StringBuilder();
-        String[] primaryPathElements = primaryPath.split("/");
-        builder.append(primaryPathElements[0]).append("//")
-            .append(primaryPathElements[1]).append(primaryPathElements[2]);
-        String[] remotePathElements = localPathOfRemoteActor.split("/");
-        for (int i = 3; i < remotePathElements.length; i++) {
-                builder.append("/").append(remotePathElements[i]);
-            }
-
-        return builder.toString();
-    }
-
-    /**
      * This is a utility method that lets us get a Timer object for any operation. This is a little open-ended to allow
      * us to create a timer for pretty much anything.
      *
@@ -499,17 +477,6 @@ public class ActorContext {
      * @return
      */
     public String getDataStoreName() {
-        return datastoreContext.getDataStoreName();
-    }
-
-    /**
-     * Get the type of the data store to which this ActorContext belongs
-     *
-     * @return
-     * @deprecated Use {@link #getDataStoreName()} instead.
-     */
-    @Deprecated
-    public String getDataStoreType() {
         return datastoreContext.getDataStoreName();
     }
 

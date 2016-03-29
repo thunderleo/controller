@@ -10,6 +10,7 @@ package org.opendaylight.controller.cluster.raft.behaviors;
 
 import akka.actor.ActorRef;
 import akka.actor.Cancellable;
+import com.google.common.base.Preconditions;
 import java.util.Random;
 import java.util.concurrent.TimeUnit;
 import org.opendaylight.controller.cluster.raft.ClientRequestTracker;
@@ -38,9 +39,6 @@ import scala.concurrent.duration.FiniteDuration;
  * set currentTerm = T, convert to follower (§5.1)
  */
 public abstract class AbstractRaftActorBehavior implements RaftActorBehavior {
-
-    protected static final ElectionTimeout ELECTION_TIMEOUT = new ElectionTimeout();
-
     /**
      * Information about the RaftActor whose behavior this class represents
      */
@@ -69,16 +67,31 @@ public abstract class AbstractRaftActorBehavior implements RaftActorBehavior {
 
     private final RaftState state;
 
-    protected AbstractRaftActorBehavior(RaftActorContext context, RaftState state) {
-        this.context = context;
-        this.state = state;
+    AbstractRaftActorBehavior(final RaftActorContext context, final RaftState state) {
+        this.context = Preconditions.checkNotNull(context);
+        this.state = Preconditions.checkNotNull(state);
         this.LOG = context.getLogger();
 
         logName = String.format("%s (%s)", context.getId(), state);
     }
 
+    public static RaftActorBehavior createBehavior(final RaftActorContext context, final RaftState state) {
+        switch (state) {
+            case Candidate:
+                return new Candidate(context);
+            case Follower:
+                return new Follower(context);
+            case IsolatedLeader:
+                return new IsolatedLeader(context);
+            case Leader:
+                return new Leader(context);
+            default:
+                throw new IllegalArgumentException("Unhandled state " + state);
+        }
+    }
+
     @Override
-    public RaftState state() {
+    public final RaftState state() {
         return state;
     }
 
@@ -267,7 +280,7 @@ public abstract class AbstractRaftActorBehavior implements RaftActorBehavior {
         if(canStartElection()) {
             // Schedule an election. When the scheduler triggers an ElectionTimeout message is sent to itself
             electionCancel = context.getActorSystem().scheduler().scheduleOnce(interval, context.getActor(),
-                    ELECTION_TIMEOUT,context.getActorSystem().dispatcher(), context.getActor());
+                    ElectionTimeout.INSTANCE, context.getActorSystem().dispatcher(), context.getActor());
         }
     }
 
@@ -435,7 +448,7 @@ public abstract class AbstractRaftActorBehavior implements RaftActorBehavior {
 
     protected RaftActorBehavior internalSwitchBehavior(RaftState newState) {
         if(context.getRaftPolicy().automaticElectionsEnabled()){
-            return internalSwitchBehavior(newState.createBehavior(context));
+            return internalSwitchBehavior(createBehavior(context, newState));
         }
         return this;
     }
@@ -482,7 +495,7 @@ public abstract class AbstractRaftActorBehavior implements RaftActorBehavior {
      * @param snapshotCapturedIndex
      */
     protected void performSnapshotWithoutCapture(final long snapshotCapturedIndex) {
-        long actualIndex = context.getSnapshotManager().trimLog(snapshotCapturedIndex, this);
+        long actualIndex = context.getSnapshotManager().trimLog(snapshotCapturedIndex);
 
         if(actualIndex != -1){
             setReplicatedToAllIndex(actualIndex);

@@ -35,6 +35,7 @@ import com.typesafe.config.ConfigFactory;
 import java.util.Arrays;
 import java.util.Map;
 import java.util.concurrent.TimeUnit;
+import java.util.function.Function;
 import org.junit.Assert;
 import org.junit.Test;
 import org.mockito.Mockito;
@@ -293,53 +294,6 @@ public class ActorContextTest extends AbstractActorTest{
     }
 
     @Test
-    public void testResolvePathForRemoteActor() {
-        ActorContext actorContext =
-                new ActorContext(getSystem(), mock(ActorRef.class), mock(
-                        ClusterWrapper.class),
-                        mock(Configuration.class));
-
-        String actual = actorContext.resolvePath(
-                "akka.tcp://system@127.0.0.1:2550/user/shardmanager/shard",
-                "akka://system/user/shardmanager/shard/transaction");
-
-        String expected = "akka.tcp://system@127.0.0.1:2550/user/shardmanager/shard/transaction";
-
-        assertEquals(expected, actual);
-    }
-
-    @Test
-    public void testResolvePathForLocalActor() {
-        ActorContext actorContext =
-                new ActorContext(getSystem(), mock(ActorRef.class), mock(ClusterWrapper.class),
-                        mock(Configuration.class));
-
-        String actual = actorContext.resolvePath(
-                "akka://system/user/shardmanager/shard",
-                "akka://system/user/shardmanager/shard/transaction");
-
-        String expected = "akka://system/user/shardmanager/shard/transaction";
-
-        assertEquals(expected, actual);
-    }
-
-    @Test
-    public void testResolvePathForRemoteActorWithProperRemoteAddress() {
-        ActorContext actorContext =
-                new ActorContext(getSystem(), mock(ActorRef.class), mock(ClusterWrapper.class),
-                        mock(Configuration.class));
-
-        String actual = actorContext.resolvePath(
-                "akka.tcp://system@7.0.0.1:2550/user/shardmanager/shard",
-                "akka.tcp://system@7.0.0.1:2550/user/shardmanager/shard/transaction");
-
-        String expected = "akka.tcp://system@7.0.0.1:2550/user/shardmanager/shard/transaction";
-
-        assertEquals(expected, actual);
-    }
-
-
-    @Test
     public void testClientDispatcherIsGlobalDispatcher(){
         ActorContext actorContext =
                 new ActorContext(getSystem(), mock(ActorRef.class), mock(ClusterWrapper.class),
@@ -544,7 +498,12 @@ public class ActorContextTest extends AbstractActorTest{
                     mock(ClusterWrapper.class), mockConfig,
                     DatastoreContext.newBuilder().shardInitializationTimeout(200, TimeUnit.MILLISECONDS).build(), new PrimaryShardInfoFutureCache());
 
-            actorContext.broadcast(new TestMessage());
+            actorContext.broadcast(new Function<Short, Object>() {
+                @Override
+                public Object apply(Short v) {
+                    return new TestMessage();
+                }
+            });
 
             MessageCollectorActor.expectFirstMatching(shardActorRef1, TestMessage.class);
             MessageCollectorActor.expectFirstMatching(shardActorRef2, TestMessage.class);

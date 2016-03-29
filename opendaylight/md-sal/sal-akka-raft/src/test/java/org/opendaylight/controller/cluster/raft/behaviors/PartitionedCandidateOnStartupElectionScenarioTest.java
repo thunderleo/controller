@@ -61,7 +61,7 @@ public class PartitionedCandidateOnStartupElectionScenarioTest extends AbstractL
         member3Actor.expectMessageClass(RequestVote.class, 1);
         member3Actor.expectBehaviorStateChange();
 
-        member1ActorRef.tell(new ElectionTimeout(), ActorRef.noSender());
+        member1ActorRef.tell(ElectionTimeout.INSTANCE, ActorRef.noSender());
 
         member2Actor.waitForExpectedMessages(RequestVote.class);
         member3Actor.waitForExpectedMessages(RequestVote.class);
@@ -118,7 +118,7 @@ public class PartitionedCandidateOnStartupElectionScenarioTest extends AbstractL
             member3Actor.clear();
             member3Actor.expectMessageClass(RequestVoteReply.class, 1);
 
-            member3ActorRef.tell(new ElectionTimeout(), ActorRef.noSender());
+            member3ActorRef.tell(ElectionTimeout.INSTANCE, ActorRef.noSender());
 
             member1Actor.waitForExpectedMessages(RequestVote.class);
             member2Actor.waitForExpectedMessages(RequestVote.class);
@@ -181,13 +181,14 @@ public class PartitionedCandidateOnStartupElectionScenarioTest extends AbstractL
 
         Candidate member3Behavior = new Candidate(member3Context);
         member3Actor.behavior = member3Behavior;
+        member3Context.setCurrentBehavior(member3Behavior);
 
         // Send several additional ElectionTimeouts to Candidate member 3. Each ElectionTimeout will
         // start a new term so Candidate member 3's current term will be greater than the leader's
         // current term.
 
         for(int i = 0; i < numCandidateElections - 1; i++) {
-            member3ActorRef.tell(new ElectionTimeout(), ActorRef.noSender());
+            member3ActorRef.tell(ElectionTimeout.INSTANCE, ActorRef.noSender());
         }
 
         member1Actor.waitForExpectedMessages(RequestVote.class);
@@ -219,6 +220,7 @@ public class PartitionedCandidateOnStartupElectionScenarioTest extends AbstractL
         member2Context.setConfigParams(member2ConfigParams);
 
         member2Actor.behavior = new Follower(member2Context);
+        member2Context.setCurrentBehavior(member2Actor.behavior);
 
         // Create member 1's behavior as Leader.
 

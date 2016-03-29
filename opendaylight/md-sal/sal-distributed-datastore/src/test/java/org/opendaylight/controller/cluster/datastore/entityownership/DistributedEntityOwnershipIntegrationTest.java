@@ -12,8 +12,8 @@ import static org.junit.Assert.assertNull;
 import static org.junit.Assert.assertThat;
 import static org.junit.Assert.assertTrue;
 import static org.mockito.AdditionalMatchers.or;
-import static org.mockito.Mockito.atMost;
 import static org.mockito.Mockito.doNothing;
+import static org.mockito.Mockito.never;
 import static org.mockito.Mockito.reset;
 import static org.mockito.Mockito.timeout;
 import static org.mockito.Mockito.verify;
@@ -22,11 +22,11 @@ import static org.opendaylight.controller.cluster.datastore.entityownership.Abst
 import static org.opendaylight.controller.cluster.datastore.entityownership.DistributedEntityOwnershipService.ENTITY_OWNERSHIP_SHARD_NAME;
 import static org.opendaylight.controller.cluster.datastore.entityownership.EntityOwnersModel.CANDIDATE_NAME_NODE_ID;
 import static org.opendaylight.controller.cluster.datastore.entityownership.EntityOwnersModel.entityPath;
+import akka.actor.ActorRef;
 import akka.actor.Status.Failure;
 import akka.actor.Status.Success;
 import akka.cluster.Cluster;
 import akka.testkit.JavaTestKit;
-import com.google.common.base.Function;
 import com.google.common.base.Optional;
 import com.google.common.base.Stopwatch;
 import com.google.common.collect.Iterables;
@@ -45,11 +45,12 @@ import org.mockito.Mockito;
 import org.mockito.MockitoAnnotations;
 import org.opendaylight.controller.cluster.datastore.DatastoreContext;
 import org.opendaylight.controller.cluster.datastore.DistributedDataStore;
+import org.opendaylight.controller.cluster.datastore.IntegrationTestKit;
 import org.opendaylight.controller.cluster.datastore.MemberNode;
-import org.opendaylight.controller.cluster.datastore.MemberNode.RaftStateVerifier;
 import org.opendaylight.controller.cluster.datastore.entityownership.selectionstrategy.EntityOwnerSelectionStrategyConfig;
 import org.opendaylight.controller.cluster.datastore.messages.AddShardReplica;
-import org.opendaylight.controller.cluster.raft.client.messages.OnDemandRaftState;
+import org.opendaylight.controller.cluster.raft.RaftState;
+import org.opendaylight.controller.cluster.raft.policy.DisableElectionsRaftPolicy;
 import org.opendaylight.controller.cluster.raft.utils.InMemoryJournal;
 import org.opendaylight.controller.cluster.raft.utils.InMemorySnapshotStore;
 import org.opendaylight.controller.md.cluster.datastore.model.SchemaContextHelper;
@@ -61,7 +62,6 @@ import org.opendaylight.controller.md.sal.common.api.clustering.EntityOwnershipL
 import org.opendaylight.controller.md.sal.common.api.clustering.EntityOwnershipService;
 import org.opendaylight.controller.md.sal.common.api.clustering.EntityOwnershipState;
 import org.opendaylight.yang.gen.v1.urn.opendaylight.params.xml.ns.yang.controller.md.sal.clustering.entity.owners.rev150804.entity.owners.entity.type.entity.Candidate;
-import org.opendaylight.yangtools.yang.data.api.YangInstanceIdentifier;
 import org.opendaylight.yangtools.yang.data.api.schema.MapEntryNode;
 import org.opendaylight.yangtools.yang.data.api.schema.MapNode;
 import org.opendaylight.yangtools.yang.data.api.schema.NormalizedNode;
@@ -119,11 +119,9 @@ public class DistributedEntityOwnershipIntegrationTest {
         }
     }
 
-    private DistributedEntityOwnershipService newOwnershipService(DistributedDataStore datastore) {
-        DistributedEntityOwnershipService service = new DistributedEntityOwnershipService(datastore,
+    private static DistributedEntityOwnershipService newOwnershipService(final DistributedDataStore datastore) {
+        return DistributedEntityOwnershipService.start(datastore.getActorContext(),
                 EntityOwnerSelectionStrategyConfig.newBuilder().build());
-        service.start();
-        return service;
     }
 
     @Test
@@ -171,7 +169,8 @@ public class DistributedEntityOwnershipIntegrationTest {
 
         leaderEntityOwnershipService.registerCandidate(ENTITY1_2);
         verify(leaderMockListener2, timeout(5000)).ownershipChanged(ownershipChange(ENTITY1_2, false, true, true));
-        verify(leaderMockListener, timeout(300).never()).ownershipChanged(ownershipChange(ENTITY1_2));
+        Uninterruptibles.sleepUninterruptibly(300, TimeUnit.MILLISECONDS);
+        verify(leaderMockListener, never()).ownershipChanged(ownershipChange(ENTITY1_2));
         reset(leaderMockListener2);
 
         // Register follower1 candidate for entity1 and verify it gets added but doesn't become owner
@@ -179,8 +178,9 @@ public class DistributedEntityOwnershipIntegrationTest {
         follower1EntityOwnershipService.registerCandidate(ENTITY1);
         verifyCandidates(leaderDistributedDataStore, ENTITY1, "member-1", "member-2");
         verifyOwner(leaderDistributedDataStore, ENTITY1, "member-1");
-        verify(leaderMockListener, timeout(300).never()).ownershipChanged(ownershipChange(ENTITY1));
-        verify(follower1MockListener, timeout(300).never()).ownershipChanged(ownershipChange(ENTITY1));
+        Uninterruptibles.sleepUninterruptibly(300, TimeUnit.MILLISECONDS);
+        verify(leaderMockListener, never()).ownershipChanged(ownershipChange(ENTITY1));
+        verify(follower1MockListener, never()).ownershipChanged(ownershipChange(ENTITY1));
 
         // Register follower1 candidate for entity2 and verify it becomes owner
 
@@ -192,6 +192,9 @@ public class DistributedEntityOwnershipIntegrationTest {
         // Register follower2 candidate for entity2 and verify it gets added but doesn't become owner
 
         follower2EntityOwnershipService.registerListener(ENTITY_TYPE1, follower2MockListener);
+        verify(follower2MockListener, timeout(5000)).ownershipChanged(ownershipChange(ENTITY2, false, false, true));
+        verify(follower2MockListener, timeout(5000)).ownershipChanged(ownershipChange(ENTITY1, false, false, true));
+
         follower2EntityOwnershipService.registerCandidate(ENTITY2);
         verifyCandidates(leaderDistributedDataStore, ENTITY2, "member-2", "member-3");
         verifyOwner(leaderDistributedDataStore, ENTITY2, "member-2");
@@ -208,7 +211,6 @@ public class DistributedEntityOwnershipIntegrationTest {
         // if the original ownership change with "member-2 is replicated to follower2 after the listener is
         // registered.
         Uninterruptibles.sleepUninterruptibly(500, TimeUnit.MILLISECONDS);
-        verify(follower2MockListener, atMost(1)).ownershipChanged(ownershipChange(ENTITY2, false, false, true));
         verify(follower2MockListener, timeout(5000)).ownershipChanged(ownershipChange(ENTITY2, false, true, true));
 
         // Register follower1 candidate for entity3 and verify it becomes owner
@@ -257,6 +259,81 @@ public class DistributedEntityOwnershipIntegrationTest {
         verifyOwner(leaderDistributedDataStore, ENTITY2, "");
         verify(leaderMockListener, timeout(5000)).ownershipChanged(ownershipChange(ENTITY2, true, false, false));
         verify(follower1MockListener, timeout(5000)).ownershipChanged(ownershipChange(ENTITY2, false, false, false));
+    }
+
+    @Test
+    public void testLeaderCandidatesRemovedAfterShutdown() throws Exception {
+        followerDatastoreContextBuilder.shardElectionTimeoutFactor(5).
+                    customRaftPolicyImplementation(DisableElectionsRaftPolicy.class.getName());
+
+        String name = "test";
+        MemberNode leaderNode = MemberNode.builder(memberNodes).akkaConfig("Member1").testName(name ).
+                moduleShardsConfig(MODULE_SHARDS_CONFIG).schemaContext(SCHEMA_CONTEXT).createOperDatastore(false).
+                datastoreContextBuilder(leaderDatastoreContextBuilder).build();
+
+        MemberNode follower1Node = MemberNode.builder(memberNodes).akkaConfig("Member2").testName(name ).
+                moduleShardsConfig(MODULE_SHARDS_CONFIG).schemaContext(SCHEMA_CONTEXT).createOperDatastore(false).
+                datastoreContextBuilder(followerDatastoreContextBuilder).build();
+
+        MemberNode follower2Node = MemberNode.builder(memberNodes).akkaConfig("Member3").testName(name ).
+                moduleShardsConfig(MODULE_SHARDS_CONFIG).schemaContext(SCHEMA_CONTEXT).createOperDatastore(false).
+                datastoreContextBuilder(followerDatastoreContextBuilder).build();
+
+        DistributedDataStore leaderDistributedDataStore = leaderNode.configDataStore();
+
+        leaderDistributedDataStore.waitTillReady();
+        follower1Node.configDataStore().waitTillReady();
+        follower2Node.configDataStore().waitTillReady();
+
+        EntityOwnershipService leaderEntityOwnershipService = newOwnershipService(leaderDistributedDataStore);
+        EntityOwnershipService follower1EntityOwnershipService = newOwnershipService(follower1Node.configDataStore());
+        EntityOwnershipService follower2EntityOwnershipService = newOwnershipService(follower2Node.configDataStore());
+
+        leaderNode.kit().waitUntilLeader(leaderNode.configDataStore().getActorContext(), ENTITY_OWNERSHIP_SHARD_NAME);
+
+        // Register follower1 candidate for entity1 and verify it becomes owner
+
+        follower1EntityOwnershipService.registerCandidate(ENTITY1);
+        verifyOwner(leaderDistributedDataStore, ENTITY1, "member-2");
+
+        // Register leader candidate for entity1
+
+        leaderEntityOwnershipService.registerCandidate(ENTITY1);
+        verifyCandidates(leaderDistributedDataStore, ENTITY1, "member-2", "member-1");
+        verifyOwner(leaderDistributedDataStore, ENTITY1, "member-2");
+
+        // Register leader candidate for entity2 and verify it becomes owner
+
+        leaderEntityOwnershipService.registerCandidate(ENTITY2);
+        verifyOwner(leaderDistributedDataStore, ENTITY2, "member-1");
+
+        // Register follower2 candidate for entity2
+
+        follower2EntityOwnershipService.registerCandidate(ENTITY2);
+        verifyCandidates(leaderDistributedDataStore, ENTITY2, "member-1", "member-3");
+        verifyOwner(leaderDistributedDataStore, ENTITY2, "member-1");
+
+        // Shutdown the leader and verify its removed from the candidate list
+
+        leaderNode.cleanup();
+        follower1Node.waitForMemberDown("member-1");
+
+        // Re-enable elections on folower1 so it becomes the leader
+
+        ActorRef follower1Shard = IntegrationTestKit.findLocalShard(follower1Node.configDataStore().
+                getActorContext(), ENTITY_OWNERSHIP_SHARD_NAME);
+        follower1Shard.tell(DatastoreContext.newBuilderFrom(followerDatastoreContextBuilder.build()).
+                customRaftPolicyImplementation(null).build(), ActorRef.noSender());
+
+        MemberNode.verifyRaftState(follower1Node.configDataStore(), ENTITY_OWNERSHIP_SHARD_NAME,
+            raftState -> assertEquals("Raft state", RaftState.Leader.toString(), raftState.getRaftState()));
+
+        // Verify the prior leader's candidates are removed
+
+        verifyCandidates(follower1Node.configDataStore(), ENTITY1, "member-2");
+        verifyCandidates(follower1Node.configDataStore(), ENTITY2, "member-3");
+        verifyOwner(follower1Node.configDataStore(), ENTITY1, "member-2");
+        verifyOwner(follower1Node.configDataStore(), ENTITY2, "member-3");
     }
 
     /**
@@ -317,8 +394,11 @@ public class DistributedEntityOwnershipIntegrationTest {
         boolean passed = false;
         for(int i=0;i<100;i++) {
             Uninterruptibles.sleepUninterruptibly(50, TimeUnit.MILLISECONDS);
-            if(!leaderEntityOwnershipService.getOwnershipState(ENTITY1).get().hasOwner() &&
+            if(!leaderEntityOwnershipService.getOwnershipState(ENTITY1).isPresent() ||
+                    !leaderEntityOwnershipService.getOwnershipState(ENTITY1).get().hasOwner() &&
+                    follower1EntityOwnershipService.getOwnershipState(ENTITY1).isPresent() &&
                     !follower1EntityOwnershipService.getOwnershipState(ENTITY1).get().hasOwner() &&
+                    follower2EntityOwnershipService.getOwnershipState(ENTITY1).isPresent() &&
                     !follower2EntityOwnershipService.getOwnershipState(ENTITY1).get().hasOwner() &&
                     leaderChangeCaptor.getAllValues().size() > 0 && !leaderChangeCaptor.getValue().hasOwner() &&
                     leaderChangeCaptor.getAllValues().size() > 0 && !follower1ChangeCaptor.getValue().hasOwner() &&
@@ -365,7 +445,8 @@ public class DistributedEntityOwnershipIntegrationTest {
 
         // Register a candidate for follower1 - should get queued since follower1 has no leader
         EntityOwnershipCandidateRegistration candidateReg = follower1EntityOwnershipService.registerCandidate(ENTITY1);
-        verify(leaderMockListener, timeout(300).never()).ownershipChanged(ownershipChange(ENTITY1));
+        Uninterruptibles.sleepUninterruptibly(300, TimeUnit.MILLISECONDS);
+        verify(leaderMockListener, never()).ownershipChanged(ownershipChange(ENTITY1));
 
         // Add replica in follower1
         AddShardReplica addReplica = new AddShardReplica(ENTITY_OWNERSHIP_SHARD_NAME);
@@ -395,29 +476,26 @@ public class DistributedEntityOwnershipIntegrationTest {
         follower1EntityOwnershipService.registerCandidate(ENTITY1);
         verify(leaderMockListener, timeout(20000)).ownershipChanged(ownershipChange(ENTITY1, false, false, true));
 
-        verifyRaftState(follower1Node.configDataStore(), ENTITY_OWNERSHIP_SHARD_NAME, new RaftStateVerifier() {
-            @Override
-            public void verify(OnDemandRaftState raftState) {
-                assertNull("Custom RaftPolicy class name", raftState.getCustomRaftPolicyClassName());
-                assertEquals("Peer count", 1, raftState.getPeerAddresses().keySet().size());
-                assertThat("Peer Id", Iterables.<String>getLast(raftState.getPeerAddresses().keySet()),
-                        org.hamcrest.CoreMatchers.containsString("member-1"));
-            }
+        verifyRaftState(follower1Node.configDataStore(), ENTITY_OWNERSHIP_SHARD_NAME, raftState -> {
+            assertNull("Custom RaftPolicy class name", raftState.getCustomRaftPolicyClassName());
+            assertEquals("Peer count", 1, raftState.getPeerAddresses().keySet().size());
+            assertThat("Peer Id", Iterables.<String>getLast(raftState.getPeerAddresses().keySet()),
+                    org.hamcrest.CoreMatchers.containsString("member-1"));
         });
     }
 
-    private static void verifyGetOwnershipState(EntityOwnershipService service, Entity entity,
-            boolean isOwner, boolean hasOwner) {
+    private static void verifyGetOwnershipState(final EntityOwnershipService service, final Entity entity,
+            final boolean isOwner, final boolean hasOwner) {
         Optional<EntityOwnershipState> state = service.getOwnershipState(entity);
         assertEquals("getOwnershipState present", true, state.isPresent());
         assertEquals("isOwner", isOwner, state.get().isOwner());
         assertEquals("hasOwner", hasOwner, state.get().hasOwner());
     }
 
-    private static void verifyCandidates(DistributedDataStore dataStore, Entity entity, String... expCandidates) throws Exception {
+    private static void verifyCandidates(final DistributedDataStore dataStore, final Entity entity, final String... expCandidates) throws Exception {
         AssertionError lastError = null;
         Stopwatch sw = Stopwatch.createStarted();
-        while(sw.elapsed(TimeUnit.MILLISECONDS) <= 5000) {
+        while(sw.elapsed(TimeUnit.MILLISECONDS) <= 10000) {
             Optional<NormalizedNode<?, ?>> possible = dataStore.newReadOnlyTransaction().read(
                     entityPath(entity.getType(), entity.getId()).node(Candidate.QNAME)).get(5, TimeUnit.SECONDS);
             try {
@@ -438,16 +516,13 @@ public class DistributedEntityOwnershipIntegrationTest {
         throw lastError;
     }
 
-    private static void verifyOwner(final DistributedDataStore dataStore, Entity entity, String expOwner) {
+    private static void verifyOwner(final DistributedDataStore dataStore, final Entity entity, final String expOwner) {
         AbstractEntityOwnershipTest.verifyOwner(expOwner, entity.getType(), entity.getId(),
-                new Function<YangInstanceIdentifier, NormalizedNode<?,?>>() {
-                    @Override
-                    public NormalizedNode<?, ?> apply(YangInstanceIdentifier path) {
-                        try {
-                            return dataStore.newReadOnlyTransaction().read(path).get(5, TimeUnit.SECONDS).get();
-                        } catch (Exception e) {
-                            return null;
-                        }
+                path -> {
+                    try {
+                        return dataStore.newReadOnlyTransaction().read(path).get(5, TimeUnit.SECONDS).get();
+                    } catch (Exception e) {
+                        return null;
                     }
                 });
     }

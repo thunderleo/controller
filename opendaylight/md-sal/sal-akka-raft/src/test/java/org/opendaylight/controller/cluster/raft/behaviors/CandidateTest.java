@@ -43,7 +43,7 @@ import org.opendaylight.controller.cluster.raft.utils.MessageCollectorActor;
 import org.slf4j.Logger;
 import org.slf4j.LoggerFactory;
 
-public class CandidateTest extends AbstractRaftActorBehaviorTest {
+public class CandidateTest extends AbstractRaftActorBehaviorTest<Candidate> {
     static final Logger LOG = LoggerFactory.getLogger(CandidateTest.class);
 
     private final TestActorRef<MessageCollectorActor> candidateActor = actorFactory.createTestActor(
@@ -93,7 +93,7 @@ public class CandidateTest extends AbstractRaftActorBehaviorTest {
         candidate = new Candidate(raftActorContext);
 
         RaftActorBehavior newBehavior =
-            candidate.handleMessage(candidateActor, new ElectionTimeout());
+            candidate.handleMessage(candidateActor, ElectionTimeout.INSTANCE);
 
         assertEquals("Behavior", RaftState.Leader, newBehavior.state());
     }
@@ -104,7 +104,7 @@ public class CandidateTest extends AbstractRaftActorBehaviorTest {
         raftActorContext.setPeerAddresses(setupPeers(1));
         candidate = new Candidate(raftActorContext);
 
-        candidate = candidate.handleMessage(candidateActor, new ElectionTimeout());
+        candidate = candidate.handleMessage(candidateActor, ElectionTimeout.INSTANCE);
 
         assertEquals("Behavior", RaftState.Candidate, candidate.state());
     }
@@ -325,7 +325,7 @@ public class CandidateTest extends AbstractRaftActorBehaviorTest {
     }
 
     @Override
-    protected RaftActorBehavior createBehavior(RaftActorContext actorContext) {
+    protected Candidate createBehavior(final RaftActorContext actorContext) {
         return new Candidate(actorContext);
     }
 
@@ -333,7 +333,7 @@ public class CandidateTest extends AbstractRaftActorBehaviorTest {
         return new MockRaftActorContext("candidate", getSystem(), candidateActor);
     }
 
-    private Map<String, String> setupPeers(int count) {
+    private Map<String, String> setupPeers(final int count) {
         Map<String, String> peerMap = new HashMap<>();
         peerActors = new TestActorRef[count];
         for(int i = 0; i < count; i++) {
@@ -346,8 +346,8 @@ public class CandidateTest extends AbstractRaftActorBehaviorTest {
     }
 
     @Override
-    protected void assertStateChangesToFollowerWhenRaftRPCHasNewerTerm(RaftActorContext actorContext,
-            ActorRef actorRef, RaftRPC rpc) throws Exception {
+    protected void assertStateChangesToFollowerWhenRaftRPCHasNewerTerm(final MockRaftActorContext actorContext,
+            final ActorRef actorRef, final RaftRPC rpc) throws Exception {
         super.assertStateChangesToFollowerWhenRaftRPCHasNewerTerm(actorContext, actorRef, rpc);
         assertEquals("New votedFor", null, actorContext.getTermInformation().getVotedFor());
     }

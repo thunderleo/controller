@@ -20,7 +20,6 @@ import org.opendaylight.controller.cluster.raft.RaftActorContext;
 import org.opendaylight.controller.cluster.raft.RaftActorLeadershipTransferCohort;
 import org.opendaylight.controller.cluster.raft.RaftState;
 import org.opendaylight.controller.cluster.raft.base.messages.ElectionTimeout;
-import org.opendaylight.controller.cluster.raft.base.messages.IsolatedLeaderCheck;
 import org.opendaylight.controller.cluster.raft.messages.AppendEntriesReply;
 
 /**
@@ -46,19 +45,25 @@ import org.opendaylight.controller.cluster.raft.messages.AppendEntriesReply;
  * set commitIndex = N (§5.3, §5.4).
  */
 public class Leader extends AbstractLeader {
-    private static final IsolatedLeaderCheck ISOLATED_LEADER_CHECK = new IsolatedLeaderCheck();
+    /**
+     * Internal message sent to periodically check if this leader has become isolated and should transition
+     * to {@link IsolatedLeader}.
+     */
+    @VisibleForTesting
+    static final Object ISOLATED_LEADER_CHECK = new Object();
+
     private final Stopwatch isolatedLeaderCheck;
     private @Nullable LeadershipTransferContext leadershipTransferContext;
 
     public Leader(RaftActorContext context) {
-        super(context);
+        super(context, RaftState.Leader);
         isolatedLeaderCheck = Stopwatch.createStarted();
     }
 
     @Override public RaftActorBehavior handleMessage(ActorRef sender, Object originalMessage) {
         Preconditions.checkNotNull(sender, "sender should not be null");
 
-        if (originalMessage instanceof IsolatedLeaderCheck) {
+        if (ISOLATED_LEADER_CHECK.equals(originalMessage)) {
             if (isLeaderIsolated()) {
                 LOG.warn("{}: At least {} followers need to be active, Switching {} from Leader to IsolatedLeader",
                         context.getId(), getMinIsolatedLeaderPeerCount(), leaderId);
@@ -143,7 +148,7 @@ public class Leader extends AbstractLeader {
 
             // Now send an ElectionTimeout to the matching follower to immediately start an election.
             ActorSelection followerActor = context.getPeerActorSelection(followerId);
-            followerActor.tell(new ElectionTimeout(), context.getActor());
+            followerActor.tell(ElectionTimeout.INSTANCE, context.getActor());
 
             LOG.debug("{}: Leader transfer complete", logName());
 

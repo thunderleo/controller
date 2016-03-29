@@ -8,6 +8,14 @@
 
 package org.opendaylight.controller.md.cluster.datastore.model;
 
+import static org.opendaylight.yangtools.yang.data.impl.schema.ImmutableNodes.mapEntry;
+import static org.opendaylight.yangtools.yang.data.impl.schema.ImmutableNodes.mapEntryBuilder;
+import static org.opendaylight.yangtools.yang.data.impl.schema.ImmutableNodes.mapNodeBuilder;
+import java.io.InputStream;
+import java.util.ArrayList;
+import java.util.HashSet;
+import java.util.List;
+import java.util.Set;
 import org.opendaylight.yangtools.yang.common.QName;
 import org.opendaylight.yangtools.yang.data.api.YangInstanceIdentifier;
 import org.opendaylight.yangtools.yang.data.api.schema.AugmentationNode;
@@ -29,16 +37,6 @@ import org.opendaylight.yangtools.yang.model.api.Module;
 import org.opendaylight.yangtools.yang.model.api.SchemaContext;
 import org.opendaylight.yangtools.yang.parser.impl.YangParserImpl;
 
-import java.io.InputStream;
-import java.util.ArrayList;
-import java.util.HashSet;
-import java.util.List;
-import java.util.Set;
-
-import static org.opendaylight.yangtools.yang.data.impl.schema.ImmutableNodes.mapEntry;
-import static org.opendaylight.yangtools.yang.data.impl.schema.ImmutableNodes.mapEntryBuilder;
-import static org.opendaylight.yangtools.yang.data.impl.schema.ImmutableNodes.mapNodeBuilder;
-
 public class CompositeModel {
 
   public static final QName TEST_QNAME = QName.create(
@@ -49,6 +47,8 @@ public class CompositeModel {
       "urn:opendaylight:params:xml:ns:yang:controller:md:sal:dom:store:aug",
       "2014-03-13", "name");
 
+  public static final QName AUG_CONTAINER = QName.create(AUG_QNAME, "aug-container");
+  public static final QName AUG_INNER_CONTAINER = QName.create(AUG_QNAME, "aug-inner-container");
   public static final QName DESC_QNAME = QName.create(TEST_QNAME, "desc");
   public static final QName OUTER_LIST_QNAME = QName.create(TEST_QNAME,
       "outer-list");
@@ -262,13 +262,13 @@ public class CompositeModel {
         ImmutableLeafSetEntryNodeBuilder
             .create()
             .withNodeIdentifier(
-                new YangInstanceIdentifier.NodeWithValue(QName.create(TEST_QNAME,
+                new YangInstanceIdentifier.NodeWithValue<>(QName.create(TEST_QNAME,
                     "shoe"), "nike")).withValue("nike").build();
     final LeafSetEntryNode<Object> puma =
         ImmutableLeafSetEntryNodeBuilder
             .create()
             .withNodeIdentifier(
-                new YangInstanceIdentifier.NodeWithValue(QName.create(TEST_QNAME,
+                new YangInstanceIdentifier.NodeWithValue<>(QName.create(TEST_QNAME,
                     "shoe"), "puma")).withValue("puma").build();
     final LeafSetNode<Object> shoes =
         ImmutableLeafSetNodeBuilder
@@ -282,13 +282,13 @@ public class CompositeModel {
         ImmutableLeafSetEntryNodeBuilder
             .create()
             .withNodeIdentifier(
-                (new YangInstanceIdentifier.NodeWithValue(QName.create(TEST_QNAME,
+                (new YangInstanceIdentifier.NodeWithValue<>(QName.create(TEST_QNAME,
                     "number"), 5))).withValue(5).build();
     final LeafSetEntryNode<Object> fifteen =
         ImmutableLeafSetEntryNodeBuilder
             .create()
             .withNodeIdentifier(
-                (new YangInstanceIdentifier.NodeWithValue(QName.create(TEST_QNAME,
+                (new YangInstanceIdentifier.NodeWithValue<>(QName.create(TEST_QNAME,
                     "number"), 15))).withValue(15).build();
     final LeafSetNode<Object> numbers =
         ImmutableLeafSetNodeBuilder

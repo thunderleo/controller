@@ -17,6 +17,11 @@ import java.util.Map;
 import java.util.Set;
 import org.opendaylight.yangtools.yang.common.QName;
 import org.opendaylight.yangtools.yang.data.api.YangInstanceIdentifier;
+import org.opendaylight.yangtools.yang.data.api.YangInstanceIdentifier.AugmentationIdentifier;
+import org.opendaylight.yangtools.yang.data.api.YangInstanceIdentifier.NodeIdentifier;
+import org.opendaylight.yangtools.yang.data.api.YangInstanceIdentifier.NodeIdentifierWithPredicates;
+import org.opendaylight.yangtools.yang.data.api.YangInstanceIdentifier.NodeWithValue;
+import org.opendaylight.yangtools.yang.data.api.YangInstanceIdentifier.PathArgument;
 import org.opendaylight.yangtools.yang.data.api.schema.NormalizedNode;
 import org.opendaylight.yangtools.yang.data.api.schema.stream.NormalizedNodeStreamWriter;
 import org.opendaylight.yangtools.yang.data.api.schema.stream.NormalizedNodeWriter;
@@ -30,6 +35,7 @@ abstract class AbstractNormalizedNodeDataOutput implements NormalizedNodeDataOut
 
     private NormalizedNodeWriter normalizedNodeWriter;
     private boolean headerWritten;
+    private QName lastLeafSetQName;
 
     AbstractNormalizedNodeDataOutput(final DataOutput output) {
         this.output = Preconditions.checkNotNull(output);
@@ -146,7 +152,7 @@ abstract class AbstractNormalizedNodeDataOutput implements NormalizedNodeDataOut
     }
 
     @Override
-    public void leafNode(final YangInstanceIdentifier.NodeIdentifier name, final Object value) throws IOException, IllegalArgumentException {
+    public void leafNode(final NodeIdentifier name, final Object value) throws IOException, IllegalArgumentException {
         Preconditions.checkNotNull(name, "Node identifier should not be null");
         LOG.debug("Writing a new leaf node");
         startNode(name.getNodeType(), NodeTypes.LEAF_NODE);
@@ -155,31 +161,40 @@ abstract class AbstractNormalizedNodeDataOutput implements NormalizedNodeDataOut
     }
 
     @Override
-    public void startLeafSet(final YangInstanceIdentifier.NodeIdentifier name, final int childSizeHint) throws IOException, IllegalArgumentException {
+    public void startLeafSet(final NodeIdentifier name, final int childSizeHint) throws IOException, IllegalArgumentException {
         Preconditions.checkNotNull(name, "Node identifier should not be null");
         LOG.debug("Starting a new leaf set");
 
+        lastLeafSetQName = name.getNodeType();
         startNode(name.getNodeType(), NodeTypes.LEAF_SET);
     }
 
     @Override
-    public void startOrderedLeafSet(final YangInstanceIdentifier.NodeIdentifier name, final int childSizeHint) throws IOException, IllegalArgumentException {
+    public void startOrderedLeafSet(final NodeIdentifier name, final int childSizeHint) throws IOException, IllegalArgumentException {
         Preconditions.checkNotNull(name, "Node identifier should not be null");
         LOG.debug("Starting a new ordered leaf set");
 
+        lastLeafSetQName = name.getNodeType();
         startNode(name.getNodeType(), NodeTypes.ORDERED_LEAF_SET);
     }
 
     @Override
-    public void leafSetEntryNode(final Object value) throws IOException, IllegalArgumentException {
+    public void leafSetEntryNode(final QName name, final Object value) throws IOException, IllegalArgumentException {
         LOG.debug("Writing a new leaf set entry node");
 
         output.writeByte(NodeTypes.LEAF_SET_ENTRY_NODE);
+
+        // lastLeafSetQName is set if the parent LeafSetNode was previously written. Otherwise this is a
+        // stand alone LeafSetEntryNode so write out it's name here.
+        if(lastLeafSetQName == null) {
+            writeQName(name);
+        }
+
         writeObject(value);
     }
 
     @Override
-    public void startContainerNode(final YangInstanceIdentifier.NodeIdentifier name, final int childSizeHint) throws IOException, IllegalArgumentException {
+    public void startContainerNode(final NodeIdentifier name, final int childSizeHint) throws IOException, IllegalArgumentException {
         Preconditions.checkNotNull(name, "Node identifier should not be null");
 
         LOG.debug("Starting a new container node");
@@ -188,7 +203,7 @@ abstract class AbstractNormalizedNodeDataOutput implements NormalizedNodeDataOut
     }
 
     @Override
-    public void startYangModeledAnyXmlNode(final YangInstanceIdentifier.NodeIdentifier name, final int childSizeHint) throws IOException, IllegalArgumentException {
+    public void startYangModeledAnyXmlNode(final NodeIdentifier name, final int childSizeHint) throws IOException, IllegalArgumentException {
         Preconditions.checkNotNull(name, "Node identifier should not be null");
 
         LOG.debug("Starting a new yang modeled anyXml node");
@@ -197,7 +212,7 @@ abstract class AbstractNormalizedNodeDataOutput implements NormalizedNodeDataOut
     }
 
     @Override
-    public void startUnkeyedList(final YangInstanceIdentifier.NodeIdentifier name, final int childSizeHint) throws IOException, IllegalArgumentException {
+    public void startUnkeyedList(final NodeIdentifier name, final int childSizeHint) throws IOException, IllegalArgumentException {
         Preconditions.checkNotNull(name, "Node identifier should not be null");
         LOG.debug("Starting a new unkeyed list");
 
@@ -205,7 +220,7 @@ abstract class AbstractNormalizedNodeDataOutput implements NormalizedNodeDataOut
     }
 
     @Override
-    public void startUnkeyedListItem(final YangInstanceIdentifier.NodeIdentifier name, final int childSizeHint) throws IOException, IllegalStateException {
+    public void startUnkeyedListItem(final NodeIdentifier name, final int childSizeHint) throws IOException, IllegalStateException {
         Preconditions.checkNotNull(name, "Node identifier should not be null");
         LOG.debug("Starting a new unkeyed list item");
 
@@ -213,7 +228,7 @@ abstract class AbstractNormalizedNodeDataOutput implements NormalizedNodeDataOut
     }
 
     @Override
-    public void startMapNode(final YangInstanceIdentifier.NodeIdentifier name, final int childSizeHint) throws IOException, IllegalArgumentException {
+    public void startMapNode(final NodeIdentifier name, final int childSizeHint) throws IOException, IllegalArgumentException {
         Preconditions.checkNotNull(name, "Node identifier should not be null");
         LOG.debug("Starting a new map node");
 
@@ -221,7 +236,7 @@ abstract class AbstractNormalizedNodeDataOutput implements NormalizedNodeDataOut
     }
 
     @Override
-    public void startMapEntryNode(final YangInstanceIdentifier.NodeIdentifierWithPredicates identifier, final int childSizeHint) throws IOException, IllegalArgumentException {
+    public void startMapEntryNode(final NodeIdentifierWithPredicates identifier, final int childSizeHint) throws IOException, IllegalArgumentException {
         Preconditions.checkNotNull(identifier, "Node identifier should not be null");
         LOG.debug("Starting a new map entry node");
         startNode(identifier.getNodeType(), NodeTypes.MAP_ENTRY_NODE);
@@ -231,7 +246,7 @@ abstract class AbstractNormalizedNodeDataOutput implements NormalizedNodeDataOut
     }
 
     @Override
-    public void startOrderedMapNode(final YangInstanceIdentifier.NodeIdentifier name, final int childSizeHint) throws IOException, IllegalArgumentException {
+    public void startOrderedMapNode(final NodeIdentifier name, final int childSizeHint) throws IOException, IllegalArgumentException {
         Preconditions.checkNotNull(name, "Node identifier should not be null");
         LOG.debug("Starting a new ordered map node");
 
@@ -239,7 +254,7 @@ abstract class AbstractNormalizedNodeDataOutput implements NormalizedNodeDataOut
     }
 
     @Override
-    public void startChoiceNode(final YangInstanceIdentifier.NodeIdentifier name, final int childSizeHint) throws IOException, IllegalArgumentException {
+    public void startChoiceNode(final NodeIdentifier name, final int childSizeHint) throws IOException, IllegalArgumentException {
         Preconditions.checkNotNull(name, "Node identifier should not be null");
         LOG.debug("Starting a new choice node");
 
@@ -247,7 +262,7 @@ abstract class AbstractNormalizedNodeDataOutput implements NormalizedNodeDataOut
     }
 
     @Override
-    public void startAugmentationNode(final YangInstanceIdentifier.AugmentationIdentifier identifier) throws IOException, IllegalArgumentException {
+    public void startAugmentationNode(final AugmentationIdentifier identifier) throws IOException, IllegalArgumentException {
         Preconditions.checkNotNull(identifier, "Node identifier should not be null");
         LOG.debug("Starting a new augmentation node");
 
@@ -256,7 +271,7 @@ abstract class AbstractNormalizedNodeDataOutput implements NormalizedNodeDataOut
     }
 
     @Override
-    public void anyxmlNode(final YangInstanceIdentifier.NodeIdentifier name, final Object value) throws IOException, IllegalArgumentException {
+    public void anyxmlNode(final NodeIdentifier name, final Object value) throws IOException, IllegalArgumentException {
         Preconditions.checkNotNull(name, "Node identifier should not be null");
         LOG.debug("Writing a new xml node");
 
@@ -313,16 +328,16 @@ abstract class AbstractNormalizedNodeDataOutput implements NormalizedNodeDataOut
     }
 
     private void writeYangInstanceIdentifierInternal(final YangInstanceIdentifier identifier) throws IOException {
-        Collection<YangInstanceIdentifier.PathArgument> pathArguments = identifier.getPathArguments();
+        Collection<PathArgument> pathArguments = identifier.getPathArguments();
         output.writeInt(pathArguments.size());
 
-        for(YangInstanceIdentifier.PathArgument pathArgument : pathArguments) {
+        for(PathArgument pathArgument : pathArguments) {
             writePathArgument(pathArgument);
         }
     }
 
     @Override
-    public void writePathArgument(final YangInstanceIdentifier.PathArgument pathArgument) throws IOException {
+    public void writePathArgument(final PathArgument pathArgument) throws IOException {
 
         byte type = PathArgumentTypes.getSerializablePathArgumentType(pathArgument);
 
@@ -331,16 +346,15 @@ abstract class AbstractNormalizedNodeDataOutput implements NormalizedNodeDataOut
         switch(type) {
             case PathArgumentTypes.NODE_IDENTIFIER:
 
-                YangInstanceIdentifier.NodeIdentifier nodeIdentifier =
-                    (YangInstanceIdentifier.NodeIdentifier) pathArgument;
+                NodeIdentifier nodeIdentifier = (NodeIdentifier) pathArgument;
 
                 writeQName(nodeIdentifier.getNodeType());
                 break;
 
             case PathArgumentTypes.NODE_IDENTIFIER_WITH_PREDICATES:
 
-                YangInstanceIdentifier.NodeIdentifierWithPredicates nodeIdentifierWithPredicates =
-                    (YangInstanceIdentifier.NodeIdentifierWithPredicates) pathArgument;
+                NodeIdentifierWithPredicates nodeIdentifierWithPredicates =
+                    (NodeIdentifierWithPredicates) pathArgument;
                 writeQName(nodeIdentifierWithPredicates.getNodeType());
 
                 writeKeyValueMap(nodeIdentifierWithPredicates.getKeyValues());
@@ -348,8 +362,7 @@ abstract class AbstractNormalizedNodeDataOutput implements NormalizedNodeDataOut
 
             case PathArgumentTypes.NODE_IDENTIFIER_WITH_VALUE :
 
-                YangInstanceIdentifier.NodeWithValue nodeWithValue =
-                    (YangInstanceIdentifier.NodeWithValue) pathArgument;
+                NodeWithValue<?> nodeWithValue = (NodeWithValue<?>) pathArgument;
 
                 writeQName(nodeWithValue.getNodeType());
                 writeObject(nodeWithValue.getValue());
@@ -357,8 +370,7 @@ abstract class AbstractNormalizedNodeDataOutput implements NormalizedNodeDataOut
 
             case PathArgumentTypes.AUGMENTATION_IDENTIFIER :
 
-                YangInstanceIdentifier.AugmentationIdentifier augmentationIdentifier =
-                    (YangInstanceIdentifier.AugmentationIdentifier) pathArgument;
+                AugmentationIdentifier augmentationIdentifier = (AugmentationIdentifier) pathArgument;
 
                 // No Qname in augmentation identifier
                 writeQNameSet(augmentationIdentifier.getPossibleChildNames());

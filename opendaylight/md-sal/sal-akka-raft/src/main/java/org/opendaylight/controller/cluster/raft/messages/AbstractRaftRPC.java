@@ -12,7 +12,7 @@ public class AbstractRaftRPC implements RaftRPC {
     private static final long serialVersionUID = -6061342433962854822L;
 
     // term
-    protected long term;
+    private long term;
 
     protected AbstractRaftRPC(long term){
         this.term = term;
@@ -27,7 +27,7 @@ public class AbstractRaftRPC implements RaftRPC {
         return term;
     }
 
-    public void setTerm(long term) {
+    protected void setTerm(long term) {
         this.term = term;
     }
 }

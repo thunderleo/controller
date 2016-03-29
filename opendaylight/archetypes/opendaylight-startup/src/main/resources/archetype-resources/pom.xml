@@ -10,7 +10,7 @@ and is available at http://www.eclipse.org/legal/epl-v10.html INTERNAL
   <parent>
     <groupId>org.opendaylight.odlparent</groupId>
     <artifactId>odlparent</artifactId>
-    <version>1.6.0-SNAPSHOT</version>
+    <version>1.7.0-SNAPSHOT</version>
     <relativePath/>
   </parent>
 
@@ -20,9 +20,18 @@ and is available at http://www.eclipse.org/legal/epl-v10.html INTERNAL
   <name>${artifactId}</name>
   <packaging>pom</packaging>
   <modelVersion>4.0.0</modelVersion>
+
   <prerequisites>
     <maven>3.1.1</maven>
   </prerequisites>
+
+  <scm>
+    <connection>scm:git:ssh://git.opendaylight.org:29418/${artifactId}.git</connection>
+    <developerConnection>scm:git:ssh://git.opendaylight.org:29418/${artifactId}.git</developerConnection>
+    <tag>HEAD</tag>
+    <url>https://wiki.opendaylight.org/view/${artifactId}:Main</url>
+  </scm>
+
   <modules>
     <module>api</module>
     <module>impl</module>
@@ -31,6 +40,7 @@ and is available at http://www.eclipse.org/legal/epl-v10.html INTERNAL
     <module>artifacts</module>
     <module>it</module>
   </modules>
+
   <!-- DO NOT install or deploy the repo root pom as it's only needed to initiate a build -->
   <build>
     <plugins>
@@ -51,10 +61,53 @@ and is available at http://www.eclipse.org/legal/epl-v10.html INTERNAL
     </plugins>
   </build>
 
-  <scm>
-    <connection>scm:git:ssh://git.opendaylight.org:29418/${artifactId}.git</connection>
-    <developerConnection>scm:git:ssh://git.opendaylight.org:29418/${artifactId}.git</developerConnection>
-    <tag>HEAD</tag>
-    <url>https://wiki.opendaylight.org/view/${artifactId}:Main</url>
-  </scm>
+  <profiles>
+    <profile>
+      <!--
+          This profile is to ensure we only build javadocs reports
+          when we plan to deploy Maven site for our project.
+      -->
+      <id>maven-site</id>
+      <activation>
+        <file>
+          <exists>${user.dir}/deploy-site.xml</exists>
+        </file>
+      </activation>
+
+      <build>
+        <plugins>
+          <plugin>
+            <groupId>org.apache.maven.plugins</groupId>
+            <artifactId>maven-javadoc-plugin</artifactId>
+            <inherited>false</inherited>
+            <executions>
+              <execution>
+                <id>aggregate</id>
+                <goals>
+                  <goal>aggregate</goal>
+                </goals>
+                <phase>package</phase>
+            </execution>
+            </executions>
+          </plugin>
+        </plugins>
+      </build>
+    </profile>
+  </profiles>
+
+  <!--
+      Maven Site Configuration
+
+      The following configuration is necessary for maven-site-plugin to
+      correctly identify the correct deployment path for OpenDaylight Maven
+      sites.
+  -->
+  <url>${odl.site.url}/${project.groupId}/${stream}/</url>
+
+  <distributionManagement>
+    <site>
+      <id>opendaylight-site</id>
+      <url>${nexus.site.url}/</url>
+    </site>
+  </distributionManagement>
 </project>

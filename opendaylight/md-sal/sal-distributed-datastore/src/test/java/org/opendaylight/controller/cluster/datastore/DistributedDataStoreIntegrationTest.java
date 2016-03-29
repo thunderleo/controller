@@ -78,6 +78,7 @@ import org.opendaylight.yangtools.yang.data.api.schema.ContainerNode;
 import org.opendaylight.yangtools.yang.data.api.schema.MapEntryNode;
 import org.opendaylight.yangtools.yang.data.api.schema.MapNode;
 import org.opendaylight.yangtools.yang.data.api.schema.NormalizedNode;
+import org.opendaylight.yangtools.yang.data.api.schema.tree.TreeType;
 import org.opendaylight.yangtools.yang.data.impl.schema.ImmutableNodes;
 import org.opendaylight.yangtools.yang.data.impl.schema.builder.impl.ImmutableContainerNodeBuilder;
 
@@ -496,6 +497,8 @@ public class DistributedDataStoreIntegrationTest {
             CountDownLatch blockRecoveryLatch = new CountDownLatch(1);
             InMemoryJournal.addBlockReadMessagesLatch(persistentID, blockRecoveryLatch);
 
+            InMemoryJournal.addEntry(persistentID, 1, "Dummy data so akka will read from persistence");
+
             DistributedDataStore dataStore = setupDistributedDataStore(testName, false, shardName);
 
             // Create the write Tx
@@ -565,6 +568,8 @@ public class DistributedDataStoreIntegrationTest {
             String persistentID = String.format("member-1-shard-%s-%s", shardName, testName);
             CountDownLatch blockRecoveryLatch = new CountDownLatch(1);
             InMemoryJournal.addBlockReadMessagesLatch(persistentID, blockRecoveryLatch);
+
+            InMemoryJournal.addEntry(persistentID, 1, "Dummy data so akka will read from persistence");
 
             DistributedDataStore dataStore = setupDistributedDataStore(testName, false, shardName);
 
@@ -1168,7 +1173,7 @@ public class DistributedDataStoreIntegrationTest {
                     CarsModel.newCarEntry("optima", BigInteger.valueOf(20000L)),
                     CarsModel.newCarEntry("sportage", BigInteger.valueOf(30000L))));
 
-            ShardDataTree dataTree = new ShardDataTree(SchemaContextHelper.full());
+            ShardDataTree dataTree = new ShardDataTree(SchemaContextHelper.full(), TreeType.OPERATIONAL);
             AbstractShardTest.writeToStore(dataTree, CarsModel.BASE_PATH, carsNode);
             NormalizedNode<?, ?> root = AbstractShardTest.readStore(dataTree.getDataTree(),
                     YangInstanceIdentifier.builder().build());
@@ -1177,7 +1182,7 @@ public class DistributedDataStoreIntegrationTest {
                     Collections.<ReplicatedLogEntry>emptyList(), 2, 1, 2, 1, 1, "member-1");
 
             NormalizedNode<?, ?> peopleNode = PeopleModel.create();
-            dataTree = new ShardDataTree(SchemaContextHelper.full());
+            dataTree = new ShardDataTree(SchemaContextHelper.full(), TreeType.OPERATIONAL);
             AbstractShardTest.writeToStore(dataTree, PeopleModel.BASE_PATH, peopleNode);
             root = AbstractShardTest.readStore(dataTree.getDataTree(), YangInstanceIdentifier.builder().build());
 

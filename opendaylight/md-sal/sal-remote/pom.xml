@@ -4,7 +4,7 @@
   <parent>
     <groupId>org.opendaylight.controller</groupId>
     <artifactId>sal-parent</artifactId>
-    <version>1.3.0-SNAPSHOT</version>
+    <version>1.4.0-SNAPSHOT</version>
   </parent>
   <artifactId>sal-remote</artifactId>
   <packaging>bundle</packaging>
@@ -28,7 +28,7 @@
           <dependency>
             <groupId>org.opendaylight.mdsal</groupId>
             <artifactId>maven-sal-api-gen-plugin</artifactId>
-            <version>${yangtools.version}</version>
+            <version>${mdsal.model.version}</version>
             <type>jar</type>
           </dependency>
         </dependencies>

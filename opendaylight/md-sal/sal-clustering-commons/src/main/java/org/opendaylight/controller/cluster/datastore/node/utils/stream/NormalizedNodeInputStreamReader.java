@@ -11,9 +11,7 @@ package org.opendaylight.controller.cluster.datastore.node.utils.stream;
 import com.google.common.base.Preconditions;
 import com.google.common.base.Strings;
 import java.io.DataInput;
-import java.io.DataInputStream;
 import java.io.IOException;
-import java.io.InputStream;
 import java.math.BigDecimal;
 import java.math.BigInteger;
 import java.nio.charset.StandardCharsets;
@@ -48,7 +46,7 @@ import org.slf4j.LoggerFactory;
  *
  */
 
-public class NormalizedNodeInputStreamReader implements NormalizedNodeDataInput, NormalizedNodeStreamReader {
+public class NormalizedNodeInputStreamReader implements NormalizedNodeDataInput {
 
     private static final Logger LOG = LoggerFactory.getLogger(NormalizedNodeInputStreamReader.class);
 
@@ -63,20 +61,11 @@ public class NormalizedNodeInputStreamReader implements NormalizedNodeDataInput,
     private NormalizedNodeAttrBuilder<YangInstanceIdentifier.NodeIdentifier,
                                       Object, LeafNode<Object>> leafBuilder;
 
-    private NormalizedNodeAttrBuilder<NodeWithValue, Object,
-                                      LeafSetEntryNode<Object>> leafSetEntryBuilder;
+    private NormalizedNodeAttrBuilder<NodeWithValue, Object, LeafSetEntryNode<Object>> leafSetEntryBuilder;
 
     private final StringBuilder reusableStringBuilder = new StringBuilder(50);
 
     private boolean readSignatureMarker = true;
-
-    /**
-     * @deprecated Use {@link #NormalizedNodeInputStreamReader(DataInput)} instead.
-     */
-    @Deprecated
-    public NormalizedNodeInputStreamReader(final InputStream stream) throws IOException {
-        this((DataInput) new DataInputStream(Preconditions.checkNotNull(stream)));
-    }
 
     /**
      * @deprecated Use {@link NormalizedNodeInputOutput#newDataInput(DataInput)} instead.
@@ -134,8 +123,13 @@ public class NormalizedNodeInputStreamReader implements NormalizedNodeDataInput,
                         withNodeIdentifier(augIdentifier)).build();
 
             case NodeTypes.LEAF_SET_ENTRY_NODE :
+                QName name = lastLeafSetQName;
+                if(name == null) {
+                    name = readQName();
+                }
+
                 Object value = readObject();
-                NodeWithValue leafIdentifier = new NodeWithValue(lastLeafSetQName, value);
+                NodeWithValue<Object> leafIdentifier = new NodeWithValue<>(name, value);
 
                 LOG.debug("Reading leaf set entry node {}, value {}", leafIdentifier, value);
 
@@ -222,7 +216,7 @@ public class NormalizedNodeInputStreamReader implements NormalizedNodeDataInput,
                         Builders.leafSetBuilder().withNodeIdentifier(identifier)).build();
 
             case NodeTypes.ORDERED_LEAF_SET:
-                LOG.debug("Read leaf set node");
+                LOG.debug("Read ordered leaf set node {}", identifier);
                 ListNodeBuilder<Object, LeafSetEntryNode<Object>> orderedLeafSetBuilder =
                         Builders.orderedLeafSetBuilder().withNodeIdentifier(identifier);
                 orderedLeafSetBuilder = addLeafSetChildren(identifier.getNodeType(), orderedLeafSetBuilder);
@@ -385,7 +379,7 @@ public class NormalizedNodeInputStreamReader implements NormalizedNodeDataInput,
                 return new NodeIdentifierWithPredicates(readQName(), readKeyValueMap());
 
             case PathArgumentTypes.NODE_IDENTIFIER_WITH_VALUE :
-                return new NodeWithValue(readQName(), readObject());
+                return new NodeWithValue<>(readQName(), readObject());
 
             default :
                 return null;
